@@ -1,26 +1,26 @@
-# Issue Log
+# 问题日志
 
-## HuggingFace datasets compatibility error when loading Amazon Reviews 2023
+## 加载 Amazon Reviews 2023 时出现 HuggingFace datasets 兼容性错误
 
-- Severity: Medium
-- Status: Open
+- 严重程度：中等
+- 状态：打开
 
-### Symptom
+### 现象
 
 ```text
 Dataset scripts are no longer supported, but found Amazon-Reviews-2023.py
 ```
 
-### Impact
+### 影响
 
-Amazon All_Beauty inspection did not complete; no inspection report was generated.
+Amazon All_Beauty 数据检查没有完成，也没有生成检查报告。
 
-### Root Cause Hypothesis
+### 根因假设
 
-The installed datasets version removed support for dataset loading scripts required by McAuley-Lab/Amazon-Reviews-2023.
+当前安装的 datasets 版本移除了对数据集加载脚本的支持，而 McAuley-Lab/Amazon-Reviews-2023 需要该机制加载。
 
-### Next Diagnostic Step
+### 下一步诊断
 
-Check installed datasets version with python3 and decide whether to use a compatible isolated environment or another official loading method.
+用 `python3` 检查当前安装的 datasets 版本，再决定是否使用兼容的隔离环境，或改用另一个官方加载方式。
 
-Do not upgrade or downgrade datasets without user confirmation.
+未经 Eddy 确认，不升级或降级 datasets。

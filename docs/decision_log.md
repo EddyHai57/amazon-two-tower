@@ -1,7 +1,8 @@
-# Decision Log
+# 决策日志
 
-- Amazon project must be separate from tianchi-two-tower.
-- Codex implements; Eddy makes design decisions.
-- Business parameters must live in config files, not hardcoded scripts.
-- Phase 1 must finish ItemCF and ID-only two-tower before text embedding or ablations.
-- Data loading compatibility changes require user confirmation.
+- Amazon 项目必须与 tianchi-two-tower 分开，放在独立的同级项目中。
+- Codex 负责实现；Eddy 负责做设计决策。
+- 业务参数必须放在配置文件中，不能硬编码在脚本里。
+- 第一阶段必须先完成 ItemCF 和仅使用 ID 的双塔模型，再进入文本嵌入或消融实验。
+- 数据加载兼容性相关变更必须经过 Eddy 确认。
+- 项目文档默认使用简体中文。
