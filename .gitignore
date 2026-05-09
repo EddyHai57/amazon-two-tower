@@ -20,3 +20,4 @@ outputs/*.npz
 !outputs/.gitkeep
 !data/.gitkeep
 !logs/.gitkeep
+.venv/
