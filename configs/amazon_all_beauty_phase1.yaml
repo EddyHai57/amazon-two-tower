@@ -5,3 +5,18 @@ inspection_sample_size: 100000
 min_user_interactions: 3
 min_item_interactions: 3
 positive_rating_threshold: 4
+interaction_analysis:
+  leave_one_out_min_interactions: 3
+  k_core_simulations:
+    - name: A
+      user_min_interactions: 3
+      item_min_interactions: 3
+    - name: B
+      user_min_interactions: 5
+      item_min_interactions: 5
+    - name: C
+      user_min_interactions: 10
+      item_min_interactions: 10
+  phase_switch_thresholds:
+    full_phase0_min_interactions: 300000
+    itemcf_only_min_interactions: 100000

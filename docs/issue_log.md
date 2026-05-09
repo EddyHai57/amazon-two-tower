@@ -63,3 +63,48 @@ python scripts/inspect_amazon_dataset.py --config configs/amazon_all_beauty_phas
 - 运行 Amazon 项目代码时，进入 `/workspace/amazon-two-tower` 并激活 `.venv`。
 - 不要提交 `.venv/`。
 - 不要在未得到 Eddy 确认前修改全局 Python 环境或随意升级/降级依赖。
+
+## All_Beauty 交互稀疏，无法作为 Phase 1 主实验数据集
+
+- 严重程度：Phase 1 为高，Phase 0 为中等
+- 状态：已解决 / 已决策
+- 日期：2026-05-09
+
+### 现象
+
+运行 `scripts/analyze_interactions.py` 后发现，All_Beauty 在 `rating >= 4` 临时正样本视图中有 500107 条 interaction，但用户重复交互极少，迭代式 k-core 过滤后规模大幅下降：
+
+- A 组 `user>=3,item>=3`：8657 interaction，1531 user，1694 item
+- B 组 `user>=5,item>=5`：293 interaction，51 user，52 item
+- C 组 `user>=10,item>=10`：10 interaction，1 user，1 item
+- 93.28% 的用户只有 1 条正向交互
+- 用户正向交互数 p50=1，p75=1，p90=1，p99=3
+- 最宽松 k-core 下 test cold item 比例为 7.97%
+
+### 影响
+
+- 不适合用于生成简历里的主实验 Recall@50 数字。
+- 双塔模型在这种数据上即使能训练，指标也可能很低且不可解释。
+- All_Beauty 仍可作为 Phase 0 工程验证数据集，用于验证数据加载、inspection、interaction analysis、日志流程等。
+
+### 初步原因判断
+
+All_Beauty 品类具有一次性消费特征，很多用户只购买或评价一次就离开。问题不是数据加载失败，也不是参数设置错误，而是该品类天然用户重复交互不足。
+
+### 已尝试的排查步骤
+
+- 统计 rating 分布。
+- 构造 `rating >= 4` 临时正样本视图。
+- 统计用户和 item 正向交互数分布。
+- 模拟 A/B/C 三组 k-core 阈值。
+- 模拟 leave-one-out split 并统计 cold item 比例。
+
+### 最终解决方案
+
+将 All_Beauty 降级为 Phase 0 工程验证数据集；Phase 1 切换到更合适的大类目，但不直接锁 Electronics，需要先对候选品类做对比分析。
+
+### 后续复用建议
+
+- 明天优先扩展 `analyze_interactions.py` 支持多品类配置。
+- 候选品类先比较 Electronics、Video_Games、Movies_and_TV。
+- 生成 `outputs/category_comparison.md` 后，再决定 Phase 1 主数据集。
