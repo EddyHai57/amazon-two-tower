@@ -1,0 +1,7 @@
+dataset_name: McAuley-Lab/Amazon-Reviews-2023
+review_config: raw_review_All_Beauty
+meta_config: raw_meta_All_Beauty
+inspection_sample_size: 100000
+min_user_interactions: 3
+min_item_interactions: 3
+positive_rating_threshold: 4
