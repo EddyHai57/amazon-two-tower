@@ -60,6 +60,10 @@ def require_config(config: dict[str, Any]) -> None:
             raise KeyError(f"配置缺少必需字段：{key}")
     if config["eval_split"] not in {"valid", "test"}:
         raise ValueError("eval_split 只支持 valid 或 test")
+    if config["eval_seen_filter"] not in {"train", "train_valid"}:
+        raise ValueError("eval_seen_filter 只支持 train 或 train_valid")
+    if config["eval_split"] == "valid" and config["eval_seen_filter"] != "train":
+        raise ValueError("valid eval 只能使用 eval_seen_filter=train")
     k_list = config["k_list"]
     if not isinstance(k_list, list) or not k_list:
         raise ValueError("k_list 必须是非空列表")
@@ -77,23 +81,28 @@ def require_columns(frame: pd.DataFrame, columns: list[str], name: str) -> None:
         raise KeyError(f"{name} 缺少必需字段：{missing}")
 
 
-def load_inputs(config: dict[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+def load_inputs(config: dict[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None, dict[str, Any]]:
     data_dir = Path(config["data_dir"])
     eval_split = config["eval_split"]
     train_path = data_dir / "train.parquet"
     eval_path = data_dir / f"{eval_split}.parquet"
+    valid_path = data_dir / "valid.parquet"
     stats_path = data_dir / "stats.json"
 
     logging.info("读取 train 数据：%s", train_path)
     train = pd.read_parquet(train_path)
     logging.info("读取 %s 数据：%s", eval_split, eval_path)
     eval_frame = pd.read_parquet(eval_path)
+    valid_frame = None
+    if eval_split == "test" and config["eval_seen_filter"] == "train_valid":
+        logging.info("读取 valid 数据用于 test seen mask：%s", valid_path)
+        valid_frame = pd.read_parquet(valid_path, columns=["user_idx", "item_idx"])
     with stats_path.open("r", encoding="utf-8") as f:
         stats = json.load(f)
 
     require_columns(train, REQUIRED_TRAIN_COLUMNS, "train")
     require_columns(eval_frame, REQUIRED_EVAL_COLUMNS, eval_split)
-    return train, eval_frame, stats
+    return train, eval_frame, valid_frame, stats
 
 
 def build_train_sets(train: pd.DataFrame, max_user_history: int) -> tuple[dict[int, set[int]], dict[int, list[int]]]:
@@ -119,6 +128,16 @@ def build_train_sets(train: pd.DataFrame, max_user_history: int) -> tuple[dict[i
         limited_history[int(user_idx)] = list(reversed(recent_unique))
 
     return full_seen, limited_history
+
+
+def add_valid_to_seen(full_seen: dict[int, set[int]], valid_frame: pd.DataFrame | None) -> dict[int, set[int]]:
+    if valid_frame is None:
+        return full_seen
+    logging.info("将 valid target item 加入 test seen mask，当前口径为 train + valid seen。")
+    merged = {user_idx: set(items) for user_idx, items in full_seen.items()}
+    for row in valid_frame.itertuples(index=False):
+        merged.setdefault(int(row.user_idx), set()).add(int(row.item_idx))
+    return merged
 
 
 def build_item_similarity(
@@ -168,13 +187,14 @@ def recommend_for_user(
     limited_history: dict[int, list[int]],
     similarity: dict[int, list[tuple[int, float]]],
     max_k: int,
+    target_item: int,
 ) -> list[int]:
     seen_items = full_seen.get(user_idx, set())
     scores: defaultdict[int, float] = defaultdict(float)
 
     for history_item in limited_history.get(user_idx, []):
         for candidate_item, sim_score in similarity.get(history_item, []):
-            if candidate_item in seen_items:
+            if candidate_item in seen_items and candidate_item != target_item:
                 continue
             scores[candidate_item] += sim_score
 
@@ -204,7 +224,7 @@ def evaluate(
     for row in eval_targets.itertuples(index=False):
         user_idx = int(row.user_idx)
         target_item = int(row.item_idx)
-        recommendations = recommend_for_user(user_idx, full_seen, limited_history, similarity, max_k)
+        recommendations = recommend_for_user(user_idx, full_seen, limited_history, similarity, max_k, target_item)
         if not recommendations:
             num_no_recommendation_users += 1
             continue
@@ -240,6 +260,8 @@ def build_metrics(
         "dataset": stats.get("dataset", "unknown"),
         "data_dir": config["data_dir"],
         "eval_split": config["eval_split"],
+        "eval_seen_filter": config["eval_seen_filter"],
+        "cold_item_eval_strategy": "exclude_from_metric",
         "num_eval_users": eval_metrics["num_eval_users"],
         "num_skipped_cold_users": eval_metrics["num_skipped_cold_users"],
         "num_no_recommendation_users": eval_metrics["num_no_recommendation_users"],
@@ -267,6 +289,8 @@ def write_metrics_md(path: Path, metrics: dict[str, Any]) -> None:
         "",
         f"- dataset：{metrics['dataset']}",
         f"- eval_split：`{metrics['eval_split']}`",
+        f"- eval_seen_filter：`{metrics['eval_seen_filter']}`",
+        f"- cold_item_eval_strategy：`{metrics['cold_item_eval_strategy']}`",
         f"- num_eval_users：{metrics['num_eval_users']}",
         f"- num_skipped_cold_users：{metrics['num_skipped_cold_users']}",
         f"- num_no_recommendation_users：{metrics['num_no_recommendation_users']}",
@@ -293,6 +317,7 @@ def write_summary_md(path: Path, config: dict[str, Any], stats: dict[str, Any], 
         f"- dataset：{metrics['dataset']}",
         f"- train interactions：{stats.get('n_interactions_train')}",
         f"- eval split：`{metrics['eval_split']}`",
+        f"- eval seen filter：`{metrics['eval_seen_filter']}`",
         f"- eval users：{metrics['num_eval_users']}",
         f"- cold eval users skipped：{metrics['num_skipped_cold_users']}",
         "",
@@ -300,11 +325,59 @@ def write_summary_md(path: Path, config: dict[str, Any], stats: dict[str, Any], 
         "",
         "- 相似度：`co_count(i, j) / sqrt(count(i) * count(j))`",
         "- 共现统计使用每个用户最近 `max_user_history` 个去重 train item。",
-        "- 推荐时过滤用户完整 train 历史中已经交互过的 item。",
+        "- 推荐时过滤 `eval_seen_filter` 指定的 seen items。",
+        "- clean test eval 使用 train + valid seen mask，并显式允许当前 test target 作为候选。",
+        "- `is_cold_item_for_eval=True` 的 target 不参与指标计算。",
         f"- `sim_topk`：{metrics['sim_topk']}",
         f"- `max_user_history`：{metrics['max_user_history']}",
         "",
         "## 3. 指标",
+        "",
+        "| K | Recall | NDCG | MRR |",
+        "| --- | --- | --- | --- |",
+    ]
+    for k in metrics["k_list"]:
+        lines.append(
+            f"| {k} | {metrics[f'recall@{k}']:.6f} | {metrics[f'ndcg@{k}']:.6f} | {metrics[f'mrr@{k}']:.6f} |"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_run_report(path: Path, config: dict[str, Any], stats: dict[str, Any], metrics: dict[str, Any]) -> None:
+    lines = [
+        "# Movies_and_TV 5-core clean ItemCF baseline 运行报告",
+        "",
+        "## 1. 本次实验目的",
+        "",
+        "本次运行基于 clean Movies_and_TV 5-core preprocess 数据重跑 ItemCF baseline，用于重新建立传统共现召回基线。",
+        "",
+        "## 2. 数据输入",
+        "",
+        f"- data_dir：`{config['data_dir']}`",
+        f"- train interactions：{stats.get('n_interactions_train')}",
+        f"- valid interactions：{stats.get('n_interactions_valid')}",
+        f"- test interactions：{stats.get('n_interactions_test')}",
+        f"- users：{stats.get('n_users')}",
+        f"- items：{stats.get('n_items')}",
+        "",
+        "## 3. 评估口径",
+        "",
+        f"- eval_split：`{metrics['eval_split']}`",
+        f"- eval_seen_filter：`{metrics['eval_seen_filter']}`",
+        "- `is_cold_item_for_eval=True` 的 target 不参与指标计算。",
+        "- test eval 过滤 train + valid seen items，并允许当前 test target 作为候选。",
+        "",
+        "## 4. ItemCF 设置",
+        "",
+        "- 相似度：`co_count(i, j) / sqrt(count(i) * count(j))`",
+        f"- sim_topk：{metrics['sim_topk']}",
+        f"- max_user_history：{metrics['max_user_history']}",
+        "",
+        "## 5. 实验结果",
+        "",
+        f"- num_eval_users：{metrics['num_eval_users']}",
+        f"- num_skipped_cold_users：{metrics['num_skipped_cold_users']}",
+        f"- num_no_recommendation_users：{metrics['num_no_recommendation_users']}",
         "",
         "| K | Recall | NDCG | MRR |",
         "| --- | --- | --- | --- |",
@@ -323,18 +396,22 @@ def save_outputs(config: dict[str, Any], stats: dict[str, Any], metrics: dict[st
     write_json(output_dir / "run_config.json", config)
     write_metrics_md(output_dir / "metrics.md", metrics)
     write_summary_md(output_dir / "itemcf_eval_summary.md", config, stats, metrics)
+    write_run_report(output_dir / "itemcf_run_report.md", config, stats, metrics)
     logging.info("ItemCF 输出已写入：%s", output_dir)
 
 
 def run_itemcf(config: dict[str, Any]) -> dict[str, Any]:
+    config = dict(config)
+    config.setdefault("eval_seen_filter", "train")
     require_config(config)
     random.seed(int(config["seed"]))
-    train, eval_frame, stats = load_inputs(config)
+    train, eval_frame, valid_frame, stats = load_inputs(config)
     full_seen, limited_history = build_train_sets(train, int(config["max_user_history"]))
+    eval_seen = add_valid_to_seen(full_seen, valid_frame)
     similarity = build_item_similarity(limited_history, int(config["sim_topk"]))
     eval_metrics = evaluate(
         eval_frame,
-        full_seen,
+        eval_seen,
         limited_history,
         similarity,
         [int(k) for k in config["k_list"]],

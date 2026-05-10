@@ -99,15 +99,34 @@ def dataset_to_frame(dataset: Any) -> pd.DataFrame:
     return frame
 
 
-def build_positive_view(frame: pd.DataFrame, rating_threshold: float) -> pd.DataFrame:
+def deduplicate_user_item_latest(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
     df = frame.copy()
     df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
     df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
-    df = df[df["rating"] >= rating_threshold]
     df = df.dropna(subset=["user_id", "parent_asin", "rating", "timestamp"]).copy()
     df["user_id"] = df["user_id"].astype(str)
     df["parent_asin"] = df["parent_asin"].astype(str)
-    return df
+
+    before = len(df)
+    sorted_df = df.sort_values(
+        ["user_id", "parent_asin", "timestamp", "original_row_idx"],
+        kind="stable",
+    )
+    deduped = sorted_df.drop_duplicates(subset=["user_id", "parent_asin"], keep="last").copy()
+    after = len(deduped)
+    stats = {
+        "n_interactions_before_dedup": int(before),
+        "n_interactions_after_dedup": int(after),
+        "dedup_removed_interactions": int(before - after),
+        "dedup_removal_ratio": (before - after) / before if before else 0.0,
+    }
+    return deduped, stats
+
+
+def build_positive_view(frame: pd.DataFrame, rating_threshold: float) -> pd.DataFrame:
+    df = frame.copy()
+    df = df[df["rating"] >= rating_threshold]
+    return df.copy()
 
 
 def run_k_core(frame: pd.DataFrame, user_min: int, item_min: int) -> pd.DataFrame:
@@ -185,6 +204,8 @@ def write_readme(path: Path, config: dict[str, Any], stats: dict[str, Any]) -> N
         "",
         "## 生成规则",
         "",
+        "- 已在 `rating >= threshold` 过滤之前对 `(user_id, parent_asin)` 做去重。",
+        "- 去重策略：按 `user_id`, `parent_asin`, `timestamp`, `original_row_idx` 稳定排序后，每对只保留最新一条 interaction。",
         f"- 正样本：`rating >= {config['positive_rating_threshold']}`",
         "- `rating < threshold` 暂时不作为显式负样本。",
         "- `verified_purchase` 暂时不参与过滤。",
@@ -195,6 +216,10 @@ def write_readme(path: Path, config: dict[str, Any], stats: dict[str, Any]) -> N
         "",
         "## 规模",
         "",
+        f"- interactions before dedup：{stats['n_interactions_before_dedup']}",
+        f"- interactions after dedup：{stats['n_interactions_after_dedup']}",
+        f"- dedup removed interactions：{stats['dedup_removed_interactions']}",
+        f"- dedup removal ratio：{stats['dedup_removal_ratio']:.6f}",
         f"- users：{stats['n_users']}",
         f"- items：{stats['n_items']}",
         f"- total interactions：{stats['n_interactions_total']}",
@@ -207,6 +232,7 @@ def write_readme(path: Path, config: dict[str, Any], stats: dict[str, Any]) -> N
 
 def build_stats(
     config: dict[str, Any],
+    dedup_stats: dict[str, Any],
     full_frame: pd.DataFrame,
     train: pd.DataFrame,
     valid: pd.DataFrame,
@@ -221,6 +247,7 @@ def build_stats(
         "kcore_user_min": int(config["kcore_user_min"]),
         "kcore_item_min": int(config["kcore_item_min"]),
         "rating_threshold": float(config["positive_rating_threshold"]),
+        **dedup_stats,
         "n_users": int(full_frame["user_idx"].nunique()),
         "n_items": int(full_frame["item_idx"].nunique()),
         "n_interactions_total": int(len(full_frame)),
@@ -264,7 +291,16 @@ def preprocess(config: dict[str, Any]) -> dict[str, Any]:
     require_config(config)
     dataset = load_reviews(config)
     raw_frame = dataset_to_frame(dataset)
-    positive = build_positive_view(raw_frame, float(config["positive_rating_threshold"]))
+    deduped, dedup_stats = deduplicate_user_item_latest(raw_frame)
+    logging.info(
+        "user-item 去重完成：before=%s after=%s removed=%s ratio=%.6f",
+        dedup_stats["n_interactions_before_dedup"],
+        dedup_stats["n_interactions_after_dedup"],
+        dedup_stats["dedup_removed_interactions"],
+        dedup_stats["dedup_removal_ratio"],
+    )
+    logging.info("去重策略：在 rating>=threshold 前，对每个 (user_id, parent_asin) 保留 timestamp 最新的一条 interaction。")
+    positive = build_positive_view(deduped, float(config["positive_rating_threshold"]))
     logging.info("正样本 interactions=%s", len(positive))
 
     filtered = run_k_core(
@@ -279,7 +315,7 @@ def preprocess(config: dict[str, Any]) -> dict[str, Any]:
     train, valid, test = leave_one_out_split(mapped)
     valid = mark_cold_items(train, valid)
     test = mark_cold_items(train, test)
-    stats = build_stats(config, mapped, train, valid, test)
+    stats = build_stats(config, dedup_stats, mapped, train, valid, test)
 
     output_dir = Path(config["output_dir"])
     save_outputs(output_dir, config, train, valid, test, user2id, item2id, id2user, id2item, stats)

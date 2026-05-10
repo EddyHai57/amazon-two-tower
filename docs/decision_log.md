@@ -202,3 +202,128 @@ ItemCF、ID-only Two-Tower 和 Text-enhanced Two-Tower 必须使用同一套 `da
 ### 对后续开发的影响
 
 明日优先任务是 ID-only Two-Tower baseline。暂时不进入负采样实验、LogQ、温度扫描或文本 embedding。
+
+## Decision 编号：DECISION-20260510-004
+
+### 决策时间
+
+2026-05-10
+
+### 决策主题
+
+Evaluation comparison must be aligned on split and eval scope。
+
+### 背景
+
+Movies_and_TV 5-core ItemCF baseline 的评估口径已通过 `outputs/itemcf_movies_tv_5core/` 下的结果文件确认。当前 ID-only Two-Tower overnight 结果也已完成，但二者的 split 和 eval scope 不一致。
+
+### 已确认事实
+
+- ItemCF 5-core baseline `Recall@50=0.083559` 已确认为 test split full non-cold eval。
+- ItemCF test 总数为 505425，cold test targets 为 955，eval users 为 504470。
+- Two-Tower overnight 当前结果是 valid split 的 50000 users subset。
+- Two-Tower valid subset `Recall@50=0.08716` 只能说明趋势，不能作为最终 test 结论。
+
+### 决策内容
+
+后续所有 baseline 对比必须明确记录：
+
+- split：valid / test
+- eval users 数量
+- 是否 full eval 或 subset eval
+- cold item exclude 口径
+- seen item mask 口径
+- 当前指标是否可直接与其他 baseline 对齐比较
+
+### 对实验可比性的影响
+
+ItemCF 和 Two-Tower 的最终可比数字必须在同一 split 和同一 eval scope 下比较。由于 ItemCF 已经是 test full non-cold eval，Two-Tower 下一步必须跑 full valid / full test eval，尤其是 full test eval，才能和 ItemCF test full eval 对齐。
+
+### 对后续开发的影响
+
+下一步先检查 `scripts/train_two_tower.py` 是否支持 eval-only；若支持，则加载 `outputs/two_tower_movies_tv_5core_overnight/checkpoints/best_model.pt` 跑 full valid / full test evaluation。暂时不进入 text embedding、LogQ、temperature sweep、negative sampling ablation 或 30 epoch training。
+
+## Decision 编号：DECISION-20260510-005
+
+### 决策时间
+
+2026-05-10
+
+### 决策主题
+
+Movies_and_TV preprocess 在正样本过滤前按 `(user_id, parent_asin)` 去重。
+
+### 背景
+
+Two-Tower full valid / full test evaluation 出现异常 gap，进一步诊断发现旧 5-core 数据中存在同一 `(user_idx, item_idx)` 跨 train / valid / test split：
+
+- `test_in_train=2637`
+- `test_in_valid=10733`
+- `valid_in_train=2641`
+- `user_item_pairs_appearing_in_multiple_splits=10737`
+
+### 可选方案
+
+A. 保持旧 preprocess，不处理重复 user-item。
+
+B. 在 `rating >= threshold` 之后去重。
+
+C. 在 `rating >= threshold` 之前去重，对同一 `(user_id, parent_asin)` 保留最新一条 interaction。
+
+### 最终选择
+
+C。
+
+### 选择原因
+
+同一用户对同一 item 的 rating 可能随时间变化。先保留最新 interaction，再判断是否满足 `rating >= threshold`，可以让正样本标签反映该用户对该 item 的最新反馈。
+
+### 对实验可比性的影响
+
+旧的 5-core preprocess、ItemCF 和 Two-Tower 结果不再作为正式可比 baseline。后续正式 baseline 应基于 clean 5-core 数据重新生成。
+
+### 对后续开发的影响
+
+- `scripts/preprocess_amazon.py` 已加入去重逻辑。
+- `data/processed/movies_tv_5core/` 已重跑生成 clean split。
+- 后续需要先重跑 clean ItemCF baseline，再重新训练 ID-only Two-Tower。
+- 3-core 对照版本后续也应使用相同去重策略重新生成。
+
+## Decision 编号：DECISION-20260510-006
+
+### 决策时间
+
+2026-05-10
+
+### 决策主题
+
+Clean test evaluation 使用 `train + valid seen` mask 口径。
+
+### 背景
+
+旧 ItemCF test baseline 只记录为过滤 train seen items；Two-Tower eval-only test 口径已经使用 train + valid seen items。为了让 clean ItemCF 和后续 clean Two-Tower baseline 对齐，需要统一 test seen mask。
+
+### 可选方案
+
+A. test eval 只过滤 train seen items。
+
+B. test eval 过滤 train + valid seen items，并允许当前 test target 作为候选。
+
+### 最终选择
+
+B。
+
+### 选择原因
+
+leave-one-out 流程中 valid 是 test 之前已发生的 held-out interaction。做 test evaluation 时，将 train + valid 作为用户历史更符合时间顺序，也能避免推荐已经在 valid 中出现过的 item。
+
+### 对实验可比性的影响
+
+后续 clean ItemCF 和 clean Two-Tower 的 test 指标必须统一使用 `train + valid seen` mask，并记录 `eval_seen_filter=train_valid`。旧 ItemCF / Two-Tower 指标不再作为正式 baseline。
+
+### 对后续开发的影响
+
+- `scripts/run_itemcf.py` 已支持 `eval_seen_filter`。
+- `configs/itemcf_movies_tv_5core_clean.yaml` 使用 `eval_seen_filter: train_valid`。
+- clean ItemCF baseline 已生成到 `outputs/itemcf_movies_tv_5core_clean/`。
+- 下一步应重跑 clean ID-only Two-Tower 5 epoch baseline。

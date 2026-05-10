@@ -241,3 +241,167 @@ torch check failed: ModuleNotFoundError("No module named 'torch'")
 - GPU compute test 已通过。
 
 后续可以在新 `.venv` 中重新运行 Two-Tower smoke test，但本次只做环境验证，没有启动训练。
+
+## 读取 eval-only JSON 指标时裸 `python` 不存在
+
+- 严重程度：Low
+- 状态：已解决 / Resolved
+- 日期：2026-05-10
+
+### 现象
+
+Two-Tower full valid / full test eval-only 已成功完成后，读取 `metrics_valid_full.json` 和 `metrics_test_full.json` 时并行执行了未激活 `.venv` 的裸 `python` 命令，命令失败。
+
+### 报错原文或关键日志
+
+```text
+/bin/bash: line 1: python: command not found
+```
+
+### 影响
+
+不影响 eval-only 运行结果。`outputs/two_tower_movies_tv_5core_full_eval/` 下的指标文件已经正常生成，只是第一次读取 JSON 的辅助命令失败。
+
+### 初步原因判断
+
+当前 shell 没有默认 `python` 命令；Amazon 项目应使用激活后的项目环境 `.venv`。
+
+### 已尝试的排查步骤
+
+- 确认 `outputs/two_tower_movies_tv_5core_full_eval/metrics_valid_full.json` 存在。
+- 确认 `outputs/two_tower_movies_tv_5core_full_eval/metrics_test_full.json` 存在。
+- 改用项目 `.venv` 后重新读取 JSON。
+
+### 最终解决方案
+
+使用以下命令读取指标：
+
+```bash
+source .venv/bin/activate && python -m json.tool outputs/two_tower_movies_tv_5core_full_eval/metrics_valid_full.json
+source .venv/bin/activate && python -m json.tool outputs/two_tower_movies_tv_5core_full_eval/metrics_test_full.json
+```
+
+两条命令均成功。
+
+### 后续复用建议
+
+在 `/workspace/amazon-two-tower` 中运行 Python 命令时，先执行：
+
+```bash
+source .venv/bin/activate
+```
+
+## Movies_and_TV 5-core split 存在重复 user-item 跨 split
+
+- 严重程度：High
+- 状态：已解决 / Resolved
+- 日期：2026-05-10
+
+### 现象
+
+Two-Tower full valid / full test evaluation 出现异常 gap：
+
+- full valid `Recall@50=0.085741`
+- full test `Recall@50=0.052154`
+
+老师判断 valid 到 test 约 39% 的相对下降不太可能只由正常数据分布或 test 多 mask 一个 valid item 解释，因此优先做 bug diagnosis。
+
+### 报错原文或关键日志
+
+本次没有 Python exception。诊断脚本输出的关键数据为：
+
+```text
+test pair 出现在 train 中：2637
+test pair 出现在 valid 中：10733
+valid pair 出现在 train 中：2641
+valid users：505425，其中单条 valid 的 users：505425
+test users：505425，其中单条 test 的 users：505425
+valid 中有但 test 中没有的 users：0
+test 中有但 valid 中没有的 users：0
+```
+
+补充统计：
+
+```text
+valid/test same target users: 10733
+test_in_train unique_users: 2637
+test_in_valid unique_users: 10733
+valid_in_train unique_users: 2641
+train duplicate user-item rows beyond first: 54695
+user-item pairs appearing in multiple splits: 10737
+total unique user-item pairs: 5345014
+```
+
+### 影响
+
+- 当前 Movies_and_TV 5-core train/valid/test 的 held-out target 与历史交互不是严格按 `(user_idx, item_idx)` 互斥。
+- 同一用户同一 `parent_asin` 可能同时出现在 train / valid / test 中。
+- 这会影响 ItemCF 和 Two-Tower 的 evaluation 语义，导致指标解释不够干净。
+- 在修复或确认策略前，不建议继续启动 full training 或进入 text embedding。
+
+### 初步原因判断
+
+当前 preprocess 的 leave-one-out 是按 interaction 切分，可能没有在切分前对同一用户的重复 `parent_asin` 交互做去重或聚合。Amazon review 中同一用户可能对同一父商品多次出现交互记录，导致同一 `(user_idx, item_idx)` 跨 split。
+
+### 已尝试的排查步骤
+
+- 新增并运行只读诊断脚本：`scripts/diagnose_two_tower_eval_gap.py`
+- 检查 `test` 的 `(user_idx, item_idx)` pair 是否出现在 `train` / `valid`。
+- 检查 `valid` 的 `(user_idx, item_idx)` pair 是否出现在 `train`。
+- 检查 valid/test 是否每个 user 各一条。
+- 检查 valid/test user set 是否一致。
+- 检查 `user_idx` / `item_idx` 是否越界。
+- 小样本检查 test target 是否被 seen mask 误伤，以及 unmask 后 target 是否仍在候选集中。
+- 比较 valid/test target popularity 分布。
+- 小样本比较 `test mask=train seen` 和 `test mask=train+valid seen`。
+
+### 当前状态
+
+已解决。已按 Eddy 确认的策略修改 `scripts/preprocess_amazon.py`：在 `rating >= threshold` 过滤之前，对同一 `(user_id, parent_asin)` 按 `user_id`, `parent_asin`, `timestamp`, `original_row_idx` 稳定排序，并保留最新一条 interaction。
+
+### 后续复用建议
+
+后续处理 3-core 或其他品类时，也应在 `rating >= threshold` 过滤之前使用相同的 user-item 去重策略，避免同一 `(user_id, parent_asin)` 跨 train / valid / test split。
+
+### 最终解决方案
+
+2026-05-10 已重跑 Movies_and_TV 5-core preprocess，输出目录仍为 `data/processed/movies_tv_5core/`。
+
+去重统计：
+
+```text
+n_interactions_before_dedup = 17328314
+n_interactions_after_dedup = 17158519
+dedup_removed_interactions = 169795
+dedup_removal_ratio = 0.00979870286284055
+```
+
+新的 5-core 核心规模：
+
+```text
+n_users = 497449
+n_items = 153977
+n_interactions_total = 5314336
+n_interactions_train = 4319438
+n_interactions_valid = 497449
+n_interactions_test = 497449
+n_cold_items_in_valid = 312
+n_cold_items_in_test = 979
+cold_item_ratio_valid = 0.000627199974268719
+cold_item_ratio_test = 0.0019680409449008844
+```
+
+clean split 验证结果：
+
+```text
+test_in_train = 0
+test_in_valid = 0
+valid_in_train = 0
+valid_test_same_target_users = 0
+train_duplicate_user_item_rows_beyond_first = 0
+valid_duplicate_user_item_rows_beyond_first = 0
+test_duplicate_user_item_rows_beyond_first = 0
+user_item_pairs_appearing_in_multiple_splits = 0
+```
+
+当前不再继续使用旧 5-core preprocess 产物作为正式 baseline 输入。后续需要基于 clean 5-core 数据重跑 ItemCF 和 ID-only Two-Tower baseline。

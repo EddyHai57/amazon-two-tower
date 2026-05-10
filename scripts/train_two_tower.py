@@ -73,7 +73,20 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="训练 ID-only Two-Tower baseline。")
     parser.add_argument("--config", required=True, help="YAML 配置文件路径。")
     parser.add_argument("--smoke_test", action="store_true", help="运行 smoke test。")
-    return parser.parse_args()
+    parser.add_argument("--eval_only", action="store_true", help="加载 checkpoint，只运行 evaluation，不进入训练。")
+    parser.add_argument("--checkpoint", help="eval-only 模式使用的 checkpoint 路径。")
+    parser.add_argument("--eval_split", choices=["valid", "test", "both"], default="both", help="eval-only 评估 split。")
+    parser.add_argument(
+        "--eval_output_dir",
+        default="outputs/two_tower_movies_tv_5core_full_eval",
+        help="eval-only 输出目录。",
+    )
+    args = parser.parse_args()
+    if args.eval_only and args.smoke_test:
+        parser.error("--eval_only 不能和 --smoke_test 同时使用。")
+    if args.eval_only and not args.checkpoint:
+        parser.error("--eval_only 需要同时指定 --checkpoint。")
+    return args
 
 
 def setup_logging() -> None:
@@ -105,7 +118,8 @@ def require_config(config: dict[str, Any]) -> None:
 def apply_smoke_overrides(config: dict[str, Any], smoke_test: bool) -> dict[str, Any]:
     merged = dict(config)
     if smoke_test:
-        merged["output_dir"] = "outputs/two_tower_movies_tv_5core_smoke"
+        if "smoke" not in str(merged["output_dir"]):
+            merged["output_dir"] = "outputs/two_tower_movies_tv_5core_smoke"
         merged["epochs"] = 1
         merged["eval_max_users"] = 1000
         merged["smoke_train_batches"] = 2
@@ -526,6 +540,18 @@ def save_checkpoint(
     )
 
 
+def load_checkpoint(path: Path, device: torch.device) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"checkpoint 不存在：{path}")
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(path, map_location=device)
+    if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
+        raise KeyError(f"checkpoint 格式无效，缺少 model_state_dict：{path}")
+    return checkpoint
+
+
 def write_report(
     path: Path,
     config: dict[str, Any],
@@ -593,6 +619,142 @@ def write_report(
     if test_skipped_reason:
         lines.extend(["", "## 5. Test 指标", "", f"- 未生成 `metrics_test.json`：{test_skipped_reason}"])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_eval_report(
+    path: Path,
+    config: dict[str, Any],
+    stats: dict[str, Any],
+    checkpoint_path: Path,
+    valid_metrics: dict[str, Any] | None,
+    test_metrics: dict[str, Any] | None,
+) -> None:
+    lines = [
+        "# Movies_and_TV 5-core ID-only Two-Tower Full Eval 报告",
+        "",
+        "## 1. 运行目的",
+        "",
+        "本次运行使用已有 best checkpoint，只执行 full valid / test evaluation，不进入训练循环。",
+        "",
+        "## 2. 输入与配置",
+        "",
+        f"- data_dir：`{config['data_dir']}`",
+        f"- checkpoint：`{checkpoint_path}`",
+        f"- users：{stats['n_users']}",
+        f"- items：{stats['n_items']}",
+        f"- embedding_dim：{config['embedding_dim']}",
+        f"- temperature：{config['temperature']}",
+        f"- use_l2_norm：{config['use_l2_norm']}",
+        f"- eval_batch_size：{config['eval_batch_size']}",
+        "- eval_max_users：null",
+        "",
+        "## 3. 评估口径",
+        "",
+        "- `is_cold_item_for_eval=True` 的样本不参与指标计算。",
+        "- valid：mask train seen items，并显式 unmask valid target。",
+        "- test：mask train + valid seen items，并显式 unmask test target。",
+        "- 当前 Two-Tower eval-only 使用更严格的 test 口径；后续是否重跑 ItemCF 对齐口径由 Eddy 确认。",
+    ]
+    for title, metrics in [("Valid 指标", valid_metrics), ("Test 指标", test_metrics)]:
+        if not metrics:
+            continue
+        lines.extend(
+            [
+                "",
+                f"## {title}",
+                "",
+                f"- num_eval_users：{metrics['num_eval_users']}",
+                f"- num_skipped_cold_users：{metrics['num_skipped_cold_users']}",
+                "",
+                "| K | Recall | NDCG | MRR |",
+                "| --- | --- | --- | --- |",
+            ]
+        )
+        for k in config["eval_k_list"]:
+            lines.append(
+                f"| {k} | {metrics[f'recall@{k}']:.6f} | {metrics[f'ndcg@{k}']:.6f} | {metrics[f'mrr@{k}']:.6f} |"
+            )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def evaluate_only(config: dict[str, Any], checkpoint_path: Path, eval_split: str, output_dir: Path) -> dict[str, Any]:
+    require_config(config)
+    config = dict(config)
+    config["eval_max_users"] = None
+    config["eval_only"] = True
+    config["checkpoint"] = str(checkpoint_path)
+    config["eval_output_dir"] = str(output_dir)
+    set_seed(int(config["seed"]))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    device = resolve_device(str(config["device"]))
+    logging.info("eval-only device=%s", device)
+    logging.info("加载 checkpoint：%s", checkpoint_path)
+    bundle = load_data(Path(config["data_dir"]))
+    train_seen = build_seen_items(bundle.train_df)
+    test_seen = merge_seen_items(train_seen, bundle.valid_df)
+
+    model = IDOnlyTwoTower(
+        num_users=int(bundle.stats["n_users"]),
+        num_items=int(bundle.stats["n_items"]),
+        embedding_dim=int(config["embedding_dim"]),
+        use_l2_norm=bool(config["use_l2_norm"]),
+    ).to(device)
+    checkpoint = load_checkpoint(checkpoint_path, device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    logging.info(
+        "checkpoint 加载完成：epoch=%s metric=%s value=%s",
+        checkpoint.get("epoch"),
+        checkpoint.get("best_metric_name"),
+        checkpoint.get("best_metric_value"),
+    )
+
+    valid_metrics = None
+    test_metrics = None
+    if eval_split in {"valid", "both"}:
+        valid_metrics = evaluate_with_oom_retry(
+            model,
+            bundle.valid_df,
+            train_seen,
+            config,
+            bundle.stats,
+            device,
+            split_name="valid",
+        )
+        valid_metrics = {
+            **valid_metrics,
+            "checkpoint": str(checkpoint_path),
+            "eval_max_users": None,
+        }
+        write_json(output_dir / "metrics_valid_full.json", valid_metrics)
+    if eval_split in {"test", "both"}:
+        # 当前 Two-Tower test eval 使用严格口径：mask train + valid seen items，再 unmask test target。
+        test_metrics = evaluate_with_oom_retry(
+            model,
+            bundle.test_df,
+            test_seen,
+            config,
+            bundle.stats,
+            device,
+            split_name="test",
+        )
+        test_metrics = {
+            **test_metrics,
+            "checkpoint": str(checkpoint_path),
+            "eval_max_users": None,
+        }
+        write_json(output_dir / "metrics_test_full.json", test_metrics)
+
+    write_eval_report(output_dir / "two_tower_full_eval_report.md", config, bundle.stats, checkpoint_path, valid_metrics, test_metrics)
+    summary = {
+        "eval_split": eval_split,
+        "output_dir": str(output_dir),
+        "checkpoint": str(checkpoint_path),
+        "valid_recall@50": valid_metrics.get("recall@50") if valid_metrics else None,
+        "test_recall@50": test_metrics.get("recall@50") if test_metrics else None,
+    }
+    logging.info("eval-only 完成：%s", json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return summary
 
 
 def train(config: dict[str, Any]) -> dict[str, Any]:
@@ -742,8 +904,11 @@ def train(config: dict[str, Any]) -> dict[str, Any]:
 def main() -> None:
     setup_logging()
     args = parse_args()
-    config = apply_smoke_overrides(load_config(Path(args.config)), args.smoke_test)
-    train(config)
+    config = load_config(Path(args.config))
+    if args.eval_only:
+        evaluate_only(config, Path(args.checkpoint), args.eval_split, Path(args.eval_output_dir))
+        return
+    train(apply_smoke_overrides(config, args.smoke_test))
 
 
 if __name__ == "__main__":
