@@ -1,0 +1,15 @@
+dataset_name: McAuley-Lab/Amazon-Reviews-2023
+category: All_Beauty
+review_config: raw_review_All_Beauty
+meta_config: raw_meta_All_Beauty
+inspection_sample_size: 100000
+positive_rating_threshold: 4
+k_core_thresholds:
+  - [3, 3]
+  - [5, 5]
+  - [10, 10]
+output_dir: outputs
+leave_one_out_min_interactions: 3
+phase_switch_thresholds:
+  full_phase0_min_interactions: 300000
+  itemcf_only_min_interactions: 100000

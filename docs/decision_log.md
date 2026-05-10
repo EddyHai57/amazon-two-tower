@@ -78,3 +78,51 @@ All_Beauty 数据稀疏问题导致需要切换数据集，5月10日24:00 baseli
 ### 对后续开发的影响
 
 明天第一步是生成候选品类对比报告，而不是直接下载 Electronics 并开始训练。
+
+## Decision 编号：DECISION-20260510-001
+
+### 决策时间
+
+2026-05-10
+
+### 决策主题
+
+确定 Movies_and_TV 作为 Phase 1 主实验数据集。
+
+### 背景
+
+All_Beauty 已验证不可用于 Phase 1 主实验数据集。它在最宽松的 `user>=3,item>=3` k-core 后只剩 8657 条 interaction，只适合作为 Phase 0 工程验证数据集。因此需要从更合适的大类目中选择 Phase 1 主实验数据集。
+
+### 候选方案
+
+- Video_Games
+- Movies_and_TV
+- Electronics
+
+### 最终选择
+
+选择 Movies_and_TV 作为 Phase 1 主实验数据集。
+
+### 选择原因
+
+- Movies_and_TV 在 `k-core(3,3)` 后仍有 8025936 条 interaction，远高于 Video_Games 和 All_Beauty。
+- Movies_and_TV 在 `k-core(5,5)` 后仍有 5413083 条 interaction，足够支撑 ItemCF 和 ID-only Two-Tower baseline。
+- Movies_and_TV 的 leave-one-out 可用 user 达到 1190601。
+- Movies_and_TV 文本内容天然丰富，适合 5月12日做 `title` / `description` embedding 对比。
+- Movies_and_TV 的 `analyze_interactions.py` 已 full_load 成功，工程风险可控。
+
+### 备选说明
+
+- Video_Games 可作为 fallback 数据集。它的 `k-core(3,3)` 后剩余 1165395 条 interaction，工程风险低，但规模小于 Movies_and_TV。
+- Electronics 简历叙事接近电商，但 inspection 阶段 full_load 下载到 14.2G / 22.6G 时发生 `HTTPSConnectionPool Read timed out`，已切换 `streaming_fallback`，暂不继续投入。
+
+### 对实验可比性的影响
+
+Phase 1 后续 preprocess、ItemCF、ID-only Two-Tower、text embedding 对比均基于 Movies_and_TV。所有 baseline 必须在同一套 Movies_and_TV train/valid/test 切分上比较。
+
+### 对后续开发的影响
+
+- All_Beauty 仅保留为 Phase 0 工程验证数据集。
+- Video_Games 保留为 fallback 数据集。
+- Electronics 暂缓，不作为 Phase 1 主数据集。
+- 下一步进入 Movies_and_TV preprocess 准备，但具体预处理规则仍需 Eddy 确认。

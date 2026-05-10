@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""分析 Amazon All_Beauty 用户-物品交互统计。"""
+"""分析 Amazon Reviews 2023 指定品类的用户-物品交互统计。"""
 
 try:
     import argparse
     import logging
+    import time
     from dataclasses import dataclass
     from pathlib import Path
     from typing import Any
@@ -19,9 +20,23 @@ except ModuleNotFoundError as exc:
     raise SystemExit(1) from exc
 
 
-REPORT_PATH = Path("outputs/interaction_analysis_all_beauty.md")
 REQUIRED_COLUMNS = ["user_id", "parent_asin", "rating", "timestamp", "verified_purchase"]
 QUANTILES = [0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
+CATEGORY_COMPARISON_COLUMNS = [
+    "品类",
+    "原始review",
+    "rating>=4正样本",
+    "unique user",
+    "unique item",
+    "user均交互(p50/p90)",
+    "k-core(3,3)剩余interaction",
+    "k-core(3,3)剩余user",
+    "k-core(3,3)剩余item",
+    "k-core(5,5)剩余interaction",
+    "leave-one-out可用user数",
+    "加载用时",
+    "加载策略(full/streaming)",
+]
 
 
 @dataclass
@@ -60,26 +75,90 @@ def load_config(config_path: Path) -> dict[str, Any]:
     return config
 
 
+def infer_category(config: dict[str, Any]) -> str:
+    if config.get("category"):
+        return str(config["category"])
+    review_config = str(config.get("review_config", ""))
+    prefix = "raw_review_"
+    if review_config.startswith(prefix):
+        return review_config[len(prefix):]
+    raise KeyError("配置缺少必需字段：category")
+
+
+def category_slug(category: str) -> str:
+    return category.lower()
+
+
+def output_dir(config: dict[str, Any]) -> Path:
+    return Path(str(config["output_dir"]))
+
+
+def interaction_report_path(config: dict[str, Any]) -> Path:
+    return output_dir(config) / f"interaction_analysis_{category_slug(infer_category(config))}.md"
+
+
+def comparison_path(config: dict[str, Any]) -> Path:
+    return output_dir(config) / "category_comparison.md"
+
+
+def normalize_k_core_thresholds(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if "k_core_thresholds" in config:
+        simulations = []
+        for idx, pair in enumerate(config["k_core_thresholds"]):
+            if not isinstance(pair, list | tuple) or len(pair) != 2:
+                raise ValueError(f"k_core_thresholds 第 {idx + 1} 项必须是 [user_min, item_min]")
+            simulations.append(
+                {
+                    "name": chr(ord("A") + idx),
+                    "user_min_interactions": int(pair[0]),
+                    "item_min_interactions": int(pair[1]),
+                }
+            )
+        return simulations
+
+    legacy = config.get("interaction_analysis", {})
+    if "k_core_simulations" in legacy:
+        return list(legacy["k_core_simulations"])
+    raise KeyError("配置缺少必需字段：k_core_thresholds")
+
+
+def normalized_analysis_config(config: dict[str, Any]) -> dict[str, Any]:
+    legacy = config.get("interaction_analysis", {})
+    if "leave_one_out_min_interactions" in config:
+        leave_one_out_min_interactions = config["leave_one_out_min_interactions"]
+    elif "leave_one_out_min_interactions" in legacy:
+        leave_one_out_min_interactions = legacy["leave_one_out_min_interactions"]
+    else:
+        raise KeyError("配置缺少必需字段：leave_one_out_min_interactions")
+
+    if "phase_switch_thresholds" in config:
+        phase_switch_thresholds = config["phase_switch_thresholds"]
+    elif "phase_switch_thresholds" in legacy:
+        phase_switch_thresholds = legacy["phase_switch_thresholds"]
+    else:
+        raise KeyError("配置缺少必需字段：phase_switch_thresholds")
+
+    return {
+        "leave_one_out_min_interactions": int(leave_one_out_min_interactions),
+        "k_core_simulations": normalize_k_core_thresholds(config),
+        "phase_switch_thresholds": phase_switch_thresholds,
+    }
+
+
 def require_config(config: dict[str, Any]) -> None:
     required_top_keys = [
         "dataset_name",
         "review_config",
+        "meta_config",
         "positive_rating_threshold",
-        "interaction_analysis",
+        "output_dir",
     ]
     for key in required_top_keys:
         if key not in config:
             raise KeyError(f"配置缺少必需字段：{key}")
 
-    analysis_config = config["interaction_analysis"]
-    required_analysis_keys = [
-        "leave_one_out_min_interactions",
-        "k_core_simulations",
-        "phase_switch_thresholds",
-    ]
-    for key in required_analysis_keys:
-        if key not in analysis_config:
-            raise KeyError(f"配置缺少必需字段：interaction_analysis.{key}")
+    infer_category(config)
+    normalized_analysis_config(config)
 
 
 def load_reviews(config: dict[str, Any]) -> Any:
@@ -224,14 +303,14 @@ def run_k_core(df: pd.DataFrame, user_min: int, item_min: int) -> pd.DataFrame:
     return current.copy()
 
 
-def phase_recommendation(interactions: int, thresholds: dict[str, Any]) -> str:
+def phase_recommendation(category: str, interactions: int, thresholds: dict[str, Any]) -> str:
     full_phase0_min = int(thresholds["full_phase0_min_interactions"])
     itemcf_only_min = int(thresholds["itemcf_only_min_interactions"])
     if interactions >= full_phase0_min:
-        return "All_Beauty 可以走到 Phase 0 完整跑通；Phase 1 切 Electronics。"
+        return f"{category} 可以走到 Phase 0 完整跑通；Phase 1 仍需与候选品类对比后决定。"
     if interactions >= itemcf_only_min:
-        return "All_Beauty 只跑 ItemCF 验证管道；双塔直接在 Electronics 上跑。"
-    return "立刻切 Electronics；All_Beauty 不再投入时间。"
+        return f"{category} 适合做 ItemCF 管道验证；双塔是否使用它需要继续比较。"
+    return f"{category} 过滤后规模偏小，不建议作为 Phase 1 主实验数据集。"
 
 
 def leave_one_out_cold_start(df: pd.DataFrame, min_interactions: int) -> dict[str, Any]:
@@ -276,6 +355,7 @@ def leave_one_out_cold_start(df: pd.DataFrame, min_interactions: int) -> dict[st
 
 
 def analyze_k_core(
+    category: str,
     positive_df: pd.DataFrame,
     analysis_config: dict[str, Any],
 ) -> list[KCoreResult]:
@@ -312,7 +392,7 @@ def analyze_k_core(
                 item_retention=pct(items, base_items),
                 leave_one_out_users=split_users,
                 leave_one_out_user_ratio=pct(split_users, users),
-                recommendation=phase_recommendation(interactions, thresholds),
+                recommendation=phase_recommendation(category, interactions, thresholds),
                 cold_start=cold_start,
             )
         )
@@ -337,6 +417,72 @@ def stats_table(stats: dict[str, float]) -> list[str]:
     )
 
 
+def k_core_by_pair(results: list[KCoreResult], user_min: int, item_min: int) -> KCoreResult | None:
+    for result in results:
+        if result.user_min == user_min and result.item_min == item_min:
+            return result
+    return None
+
+
+def parse_existing_comparison(path: Path) -> dict[str, list[str]]:
+    if not path.exists():
+        return {}
+    rows: dict[str, list[str]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line.startswith("|") or "---" in line or "品类" in line:
+            continue
+        parts = [part.strip() for part in line.strip("|").split("|")]
+        if len(parts) == len(CATEGORY_COMPARISON_COLUMNS):
+            rows[parts[0]] = parts
+    return rows
+
+
+def update_category_comparison(
+    config: dict[str, Any],
+    category: str,
+    raw_reviews: int,
+    rating_summary: dict[str, Any],
+    unique_users: int,
+    unique_items: int,
+    user_stats: dict[str, float],
+    k_core_results: list[KCoreResult],
+    load_seconds: float,
+    loading_strategy: str,
+) -> None:
+    path = comparison_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = parse_existing_comparison(path)
+    k33 = k_core_by_pair(k_core_results, 3, 3)
+    k55 = k_core_by_pair(k_core_results, 5, 5)
+    row = [
+        category,
+        fmt_int(raw_reviews),
+        f"{fmt_int(rating_summary['positive_count'])} ({fmt_pct(rating_summary['positive_ratio'])})",
+        fmt_int(unique_users),
+        fmt_int(unique_items),
+        f"{fmt_float(user_stats['p50'])}/{fmt_float(user_stats['p90'])}",
+        fmt_int(k33.interactions) if k33 else "未计算",
+        fmt_int(k33.users) if k33 else "未计算",
+        fmt_int(k33.items) if k33 else "未计算",
+        fmt_int(k55.interactions) if k55 else "未计算",
+        fmt_int(k33.leave_one_out_users) if k33 else "未计算",
+        f"{fmt_float(load_seconds)} 秒",
+        loading_strategy,
+    ]
+    rows[category] = row
+
+    lines = [
+        "# Amazon Reviews 2023 候选品类对比",
+        "",
+        "| " + " | ".join(CATEGORY_COMPARISON_COLUMNS) + " |",
+        "| " + " | ".join(["---"] * len(CATEGORY_COMPARISON_COLUMNS)) + " |",
+    ]
+    for key in sorted(rows):
+        lines.append("| " + " | ".join(rows[key]) + " |")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def write_report(
     dataset: Any,
     df: pd.DataFrame,
@@ -350,25 +496,30 @@ def write_report(
     item_stats: dict[str, float],
     item_buckets: list[dict[str, Any]],
     k_core_results: list[KCoreResult],
-) -> None:
+    load_seconds: float,
+    loading_strategy: str,
+) -> Path:
+    category = infer_category(config)
     threshold = config["positive_rating_threshold"]
     timestamp = pd.to_numeric(df["timestamp"], errors="coerce")
     min_timestamp = timestamp.min()
     max_timestamp = timestamp.max()
 
     lines = [
-        "# Amazon All_Beauty 交互数据审查报告",
+        f"# Amazon {category} 交互数据审查报告",
         "",
         "## 1. 本次分析目的",
         "",
-        "- All_Beauty 当前用于 Phase 0 工程验证。",
-        "- 本报告用于判断 All_Beauty 是否适合继续跑 preprocess、ItemCF、最简双塔。",
+        f"- {category} 当前用于候选品类交互质量分析。",
+        f"- 本报告用于判断 {category} 是否适合作为 Phase 1 主实验数据集候选。",
         "- 本报告不生成正式训练数据，只做统计分析和模拟。",
         "",
         "## 2. 数据基础信息",
         "",
         f"- review 总行数：{fmt_int(len(df))}",
         f"- 字段列表：`{dataset.column_names}`",
+        f"- 加载策略：`{loading_strategy}`",
+        f"- 加载用时：{fmt_float(load_seconds)} 秒",
         "",
         "### 缺失值检查",
         "",
@@ -534,12 +685,13 @@ def write_report(
         )
     )
     best_result = k_core_results[0] if k_core_results else None
-    if best_result and best_result.interactions >= int(config["interaction_analysis"]["phase_switch_thresholds"]["full_phase0_min_interactions"]):
-        conclusion = "All_Beauty 适合继续作为 Phase 0 工程链路验证数据集；Phase 1 的简历可写数字建议切换到更大的 Electronics。"
-    elif best_result and best_result.interactions >= int(config["interaction_analysis"]["phase_switch_thresholds"]["itemcf_only_min_interactions"]):
-        conclusion = "All_Beauty 可用于部分管道验证，但双塔训练建议尽早切到 Electronics。"
+    thresholds = normalized_analysis_config(config)["phase_switch_thresholds"]
+    if best_result and best_result.interactions >= int(thresholds["full_phase0_min_interactions"]):
+        conclusion = f"{category} 过滤后规模较充足，可以作为候选品类继续比较。"
+    elif best_result and best_result.interactions >= int(thresholds["itemcf_only_min_interactions"]):
+        conclusion = f"{category} 可用于部分管道验证，但是否适合作为主数据集需要继续比较。"
     else:
-        conclusion = "All_Beauty 过滤后规模偏小，建议立刻切换到 Electronics。"
+        conclusion = f"{category} 过滤后规模偏小，不建议作为 Phase 1 主实验数据集。"
     lines.extend(
         [
             "",
@@ -547,17 +699,17 @@ def write_report(
             "",
             "## 10. 当前结论",
             "",
-            "- 原始数据很稀疏，unique user_id 接近 review row count，说明大量用户只有少量行为。",
+            "- 原始数据是否稀疏，需要结合 unique user、用户交互分位数和 k-core 后规模一起判断。",
             f"- {conclusion}",
-            "- All_Beauty 更适合作为工程验证数据集，不适合作为最终简历数字的唯一依据。",
-            "- 下一步建议先基于本报告确认 Phase 0 预处理策略，再实现 preprocess、ItemCF 和最简 ID-only 双塔链路。",
-            "- 当前仍未生成正式 train/valid/test、ID mapping、ItemCF 输出、模型 checkpoint 或 text embeddings。",
+            "- 本报告只用于候选品类比较，不生成正式 train/valid/test、ID mapping、ItemCF 输出、模型 checkpoint 或 text embeddings。",
             "",
         ]
     )
 
-    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_PATH.write_text("\n".join(lines), encoding="utf-8")
+    path = interaction_report_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
 
 
 def main() -> None:
@@ -565,7 +717,11 @@ def main() -> None:
     args = parse_args()
     config = load_config(Path(args.config))
     require_config(config)
+    category = infer_category(config)
+    start = time.perf_counter()
     dataset = load_reviews(config)
+    load_seconds = time.perf_counter() - start
+    loading_strategy = "full"
     df = dataset_to_frame(dataset)
     threshold = float(config["positive_rating_threshold"])
 
@@ -578,9 +734,9 @@ def main() -> None:
     item_stats = distribution_stats(item_counts)
     user_buckets = bucket_histogram(user_counts, "user_bucket")
     item_buckets = bucket_histogram(item_counts, "item_bucket")
-    k_core_results = analyze_k_core(positive_df, config["interaction_analysis"])
+    k_core_results = analyze_k_core(category, positive_df, normalized_analysis_config(config))
 
-    write_report(
+    path = write_report(
         dataset=dataset,
         df=df,
         positive_df=positive_df,
@@ -593,8 +749,23 @@ def main() -> None:
         item_stats=item_stats,
         item_buckets=item_buckets,
         k_core_results=k_core_results,
+        load_seconds=load_seconds,
+        loading_strategy=loading_strategy,
     )
-    logging.info("交互数据审查报告已写入：%s", REPORT_PATH)
+    update_category_comparison(
+        config=config,
+        category=category,
+        raw_reviews=len(df),
+        rating_summary=rating_summary,
+        unique_users=positive_df["user_id"].nunique(),
+        unique_items=positive_df["parent_asin"].nunique(),
+        user_stats=user_stats,
+        k_core_results=k_core_results,
+        load_seconds=load_seconds,
+        loading_strategy=loading_strategy,
+    )
+    logging.info("交互数据审查报告已写入：%s", path)
+    logging.info("候选品类对比表已更新：%s", comparison_path(config))
 
 
 if __name__ == "__main__":

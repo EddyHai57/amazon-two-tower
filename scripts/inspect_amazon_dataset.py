@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""检查 Amazon Reviews 2023 All_Beauty 数据集结构。"""
+"""检查 Amazon Reviews 2023 指定品类的数据集结构。"""
 
 try:
     import argparse
@@ -20,7 +20,6 @@ except ModuleNotFoundError as exc:
     raise SystemExit(1) from exc
 
 
-REPORT_PATH = Path("outputs/inspection_all_beauty.md")
 TRUNCATION_MARKER = "[...truncated]"
 MAX_STRING_LENGTH = 500
 FULL_LOAD_TIMEOUT_SECONDS = 300
@@ -45,6 +44,28 @@ def load_config(config_path: Path) -> dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError(f"配置文件格式无效：{config_path}")
     return config
+
+
+def infer_category(config: dict[str, Any]) -> str:
+    if config.get("category"):
+        return str(config["category"])
+    review_config = str(config.get("review_config", ""))
+    prefix = "raw_review_"
+    if review_config.startswith(prefix):
+        return review_config[len(prefix):]
+    raise KeyError("配置缺少必需字段：category")
+
+
+def category_slug(category: str) -> str:
+    return category.lower()
+
+
+def output_dir(config: dict[str, Any]) -> Path:
+    return Path(str(config.get("output_dir", "outputs")))
+
+
+def inspection_report_path(config: dict[str, Any]) -> Path:
+    return output_dir(config) / f"inspection_{category_slug(infer_category(config))}.md"
 
 
 def load_full_dataset(dataset_name: str, config_name: str) -> Any:
@@ -223,6 +244,7 @@ def format_unique_count(value: int | None, strategy: str, sample_size: int) -> s
 
 def write_report(
     report_path: Path,
+    category: str,
     strategy: str,
     review_columns: list[str],
     meta_columns: list[str],
@@ -238,7 +260,7 @@ def write_report(
     streaming = strategy == "streaming_fallback"
 
     lines = [
-        "# Amazon Reviews 2023 All_Beauty Inspection",
+        f"# Amazon Reviews 2023 {category} Inspection",
         "",
         f"- loading strategy used: {strategy}",
         f"- review columns: {json.dumps(review_columns, ensure_ascii=False)}",
@@ -270,6 +292,7 @@ def format_sample_blocks(rows: list[dict[str, Any]]) -> list[str]:
 
 
 def inspect_datasets(config: dict[str, Any]) -> dict[str, Any]:
+    category = infer_category(config)
     reviews, meta, strategy = load_pair_with_strategy(config)
     sample_size = int(config["inspection_sample_size"])
 
@@ -302,7 +325,8 @@ def inspect_datasets(config: dict[str, Any]) -> dict[str, Any]:
     logging.info("unique parent_asin count: %s", format_unique_count(unique_items, strategy, sample_size))
 
     write_report(
-        REPORT_PATH,
+        inspection_report_path(config),
+        category,
         strategy,
         review_columns,
         meta_columns,
@@ -314,7 +338,7 @@ def inspect_datasets(config: dict[str, Any]) -> dict[str, Any]:
         unique_items,
         sample_size,
     )
-    logging.info("检查报告已写入：%s", REPORT_PATH)
+    logging.info("检查报告已写入：%s", inspection_report_path(config))
 
     return {
         "strategy": strategy,

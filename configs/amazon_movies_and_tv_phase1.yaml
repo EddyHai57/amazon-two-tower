@@ -1,0 +1,15 @@
+dataset_name: McAuley-Lab/Amazon-Reviews-2023
+category: Movies_and_TV
+review_config: raw_review_Movies_and_TV
+meta_config: raw_meta_Movies_and_TV
+inspection_sample_size: 100000
+positive_rating_threshold: 4
+k_core_thresholds:
+  - [3, 3]
+  - [5, 5]
+  - [10, 10]
+output_dir: outputs
+leave_one_out_min_interactions: 3
+phase_switch_thresholds:
+  full_phase0_min_interactions: 300000
+  itemcf_only_min_interactions: 100000
