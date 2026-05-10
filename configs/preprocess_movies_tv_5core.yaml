@@ -1,0 +1,12 @@
+dataset_name: McAuley-Lab/Amazon-Reviews-2023
+category: Movies_and_TV
+review_config: raw_review_Movies_and_TV
+meta_config: raw_meta_Movies_and_TV
+positive_rating_threshold: 4
+verified_purchase_filter: null
+kcore_user_min: 5
+kcore_item_min: 5
+split_strategy: leave_one_out
+cold_item_eval_strategy: exclude_from_test_metric
+seed: 42
+output_dir: data/processed/movies_tv_5core
