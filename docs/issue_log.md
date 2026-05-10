@@ -157,3 +157,87 @@ nohup setsid .venv/bin/python scripts/preprocess_amazon.py --config configs/prep
 ### 后续复用建议
 
 以后在当前工具环境中启动长时间后台任务时，优先使用 `nohup setsid ... > logs/<name>.log 2>&1 < /dev/null &`，并在 10-20 秒后检查日志和 PID。
+
+## 项目 `.venv` 缺少 `torch`，Two-Tower smoke test 无法启动
+
+- 严重程度：High
+- 状态：已缓解 / Mitigated
+- 日期：2026-05-10
+
+### 现象
+
+运行 ID-only Two-Tower smoke test 时，脚本在依赖检查阶段退出，没有进入训练。
+
+### 报错原文或关键日志
+
+```text
+ERROR: 缺少依赖：torch。请先在项目 .venv 中安装 package：torch
+```
+
+### 影响
+
+- `scripts/train_two_tower.py` 已通过语法检查，但 smoke test 未能运行。
+- 不能启动 overnight 5 epoch training。
+- 当前无法验证 loss、评估 mask、checkpoint 和 train log 输出。
+
+### 初步原因判断
+
+当前 `/workspace/amazon-two-tower/.venv` 中尚未安装 PyTorch。之前服务器全局环境曾验证过 PyTorch/CUDA 可用，但本项目现在要求运行 Amazon 代码时使用项目独立 `.venv`。
+
+### 已尝试的排查步骤
+
+- 使用 `.venv/bin/python -m py_compile scripts/train_two_tower.py` 验证脚本语法，通过。
+- 使用 `.venv/bin/python scripts/train_two_tower.py --config configs/two_tower_movies_tv_5core.yaml --smoke_test` 运行 smoke test，失败于缺少 `torch`。
+
+### 当前状态
+
+已通过方案 C-1 缓解：重建项目 `.venv`，并使用 `--system-site-packages` 复用服务器全局 GPU PyTorch。新 `.venv` 仍是 Amazon 项目的唯一运行环境，不是直接切到全局 Python 跑训练。
+
+### 后续复用建议
+
+不要切换到全局 Python 偷跑训练。应先在 `.venv` 中安装合适版本的 PyTorch，并记录版本后再重新运行 smoke test。
+
+### 追加排查记录
+
+2026-05-10 尝试执行：
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu126
+```
+
+pip 输出显示开始下载：
+
+```text
+Looking in indexes: https://download.pytorch.org/whl/cu126
+Collecting torch
+  Downloading torch-2.11.0%2Bcu126-cp312-cp312-manylinux_2_28_x86_64.whl.metadata (29 kB)
+...
+Collecting nvidia-cudnn-cu12==9.10.2.21 (from torch)
+  Downloading nvidia_cudnn_cu12-9.10.2.21-py3-none-manylinux_2_27_x86_64.whl (706.8 MB)
+```
+
+随后安装进程长时间无输出，CPU 占用很低，`~/.cache/pip` 约 94MB。为避免无限等待，已终止该 pip 进程。终止后确认：
+
+```text
+torch check failed: ModuleNotFoundError("No module named 'torch'")
+```
+
+### 解决方案 C-1
+
+2026-05-10 采用老师确认的方案 C-1：
+
+- 备份旧 `.venv` 为 `.venv_backup_20260510_141029`。
+- 使用 `/venv/main/bin/python -m venv .venv --system-site-packages` 重建项目 `.venv`。
+- 不再在项目 `.venv` 中硬下载 `torch`、`nvidia-*`、`triton` 或 CUDA 大包。
+- 新 `.venv` 继续作为 Amazon 项目唯一运行环境。
+- `torch` 来自全局环境：
+  - torch：`2.11.0+cu126`
+  - torch file：`/venv/main/lib/python3.12/site-packages/torch/__init__.py`
+  - cuda available：`True`
+  - device：`NVIDIA GeForce RTX 3090`
+- 项目数据依赖仍由 `.venv` 控制：
+  - datasets：`2.17.0`
+  - huggingface_hub：`0.36.2`
+- GPU compute test 已通过。
+
+后续可以在新 `.venv` 中重新运行 Two-Tower smoke test，但本次只做环境验证，没有启动训练。
