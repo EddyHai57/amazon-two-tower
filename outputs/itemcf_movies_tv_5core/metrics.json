@@ -1,0 +1,26 @@
+{
+  "data_dir": "data/processed/movies_tv_5core",
+  "dataset": "Movies_and_TV",
+  "eval_split": "test",
+  "k_list": [
+    20,
+    50,
+    100
+  ],
+  "max_user_history": 100,
+  "mrr@100": 0.022029359299112615,
+  "mrr@20": 0.021130883065512227,
+  "mrr@50": 0.021777387771960623,
+  "ndcg@100": 0.037424759422748824,
+  "ndcg@20": 0.030525903621634674,
+  "ndcg@50": 0.03455322797997852,
+  "num_eval_users": 504470,
+  "num_no_recommendation_users": 49,
+  "num_skipped_cold_users": 955,
+  "recall@100": 0.10128253414474597,
+  "recall@20": 0.06326045156302654,
+  "recall@50": 0.0835589826947093,
+  "run_timestamp": "2026-05-10T07:23:32.458798+00:00",
+  "seed": 42,
+  "sim_topk": 100
+}
