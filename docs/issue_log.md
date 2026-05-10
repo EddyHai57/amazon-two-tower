@@ -405,3 +405,83 @@ user_item_pairs_appearing_in_multiple_splits = 0
 ```
 
 当前不再继续使用旧 5-core preprocess 产物作为正式 baseline 输入。后续需要基于 clean 5-core 数据重跑 ItemCF 和 ID-only Two-Tower baseline。
+
+### 结果归档
+
+已基于 clean 5-core 数据完成 baseline 重建：
+
+- clean ItemCF test full non-cold eval：
+  - `eval_seen_filter=train_valid`
+  - `Recall@50=0.083570`
+  - `NDCG@50=0.036254`
+  - `MRR@50=0.023999`
+- clean ID-only Two-Tower 5 epoch valid subset：
+  - best_epoch：5
+  - `Recall@50=0.081220`
+  - `NDCG@50=0.036484`
+  - `MRR@50=0.024987`
+
+旧 ItemCF / Two-Tower 结果只保留为 bug diagnosis 记录，不再作为正式 baseline。下一步需要对 clean Two-Tower best checkpoint 跑 full valid / full test evaluation。
+
+## Clean Two-Tower full valid / full test 仍存在明显 gap
+
+- 严重程度：High
+- 状态：Open
+- 日期：2026-05-10
+
+### 现象
+
+clean Movies_and_TV 5-core 数据已经修复 split bug，并且 clean split 验证通过。但 clean ID-only Two-Tower 5 epoch checkpoint 做 full eval 后，valid / test 仍存在明显差距：
+
+```text
+full valid Recall@50 = 0.081591
+full test Recall@50 = 0.046746
+```
+
+clean Two-Tower full test 也低于 clean ItemCF test baseline：
+
+```text
+clean ItemCF Recall@50 = 0.083570
+clean Two-Tower Recall@50 = 0.046746
+```
+
+### 报错原文或关键日志
+
+本次没有 Python exception。eval-only 正常完成：
+
+```text
+eval-only 完成：{"checkpoint": "outputs/two_tower_movies_tv_5core_clean_overnight/checkpoints/best_model.pt", "eval_split": "both", "output_dir": "outputs/two_tower_movies_tv_5core_clean_full_eval", "test_recall@50": 0.0467460269502689, "valid_recall@50": 0.08159119116058551}
+```
+
+### 影响
+
+- clean Two-Tower 训练链路健康，但当前 full test 指标不能作为超过 ItemCF 的正式结论。
+- 不建议直接启动 20/25/30 epoch full training。
+- 需要先分析 clean valid-test gap，否则继续训练可能只是在扩大同一问题。
+
+### 初步原因判断
+
+旧 split 跨 split 重复 user-item 的 bug 已修复，因此当前 gap 需要重新诊断。可能方向包括：
+
+- valid/test target popularity 或时间分布差异。
+- ID-only batch negative 训练目标对下一跳 valid 更敏感，对更远的 test target 泛化不足。
+- 5 epoch 训练尚未充分，但不能在未诊断前直接拉长训练。
+- evaluation 口径虽然已对齐 `train_valid` test seen mask，但仍需复查 clean full eval 的 rank 分布。
+
+### 已尝试的排查步骤
+
+- 使用 clean checkpoint 执行 eval-only full valid / full test。
+- 确认加载 checkpoint：`outputs/two_tower_movies_tv_5core_clean_overnight/checkpoints/best_model.pt`
+- 确认 `eval_max_users=None`。
+- 确认 full valid / full test 输出已生成：
+  - `outputs/two_tower_movies_tv_5core_clean_full_eval/metrics_valid_full.json`
+  - `outputs/two_tower_movies_tv_5core_clean_full_eval/metrics_test_full.json`
+  - `outputs/two_tower_movies_tv_5core_clean_full_eval/two_tower_full_eval_report.md`
+
+### 当前状态
+
+Open。clean full eval 已完成，但尚未做新的 clean gap diagnosis。
+
+### 后续复用建议
+
+下一步先分析 clean valid-test gap，不要直接进入 20/25/30 epoch full training、text embedding、LogQ、temperature sweep 或 negative sampling ablation。
