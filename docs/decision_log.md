@@ -197,6 +197,8 @@ Movies_and_TV 已被确定为 Phase 1 主实验数据集。5-core preprocess 已
 
 ItemCF、ID-only Two-Tower 和 Text-enhanced Two-Tower 必须使用同一套 `data/processed/movies_tv_5core/` 数据切分，并保持一致的 cold item 排除策略和 seen item 过滤口径。
 
+后续 Two-Tower 实验必须记录 loss curve 与 valid metrics，用于判断模型是否真实学习，而不是只看最终 test 指标。
+
 ### 对后续开发的影响
 
 明日优先任务是 ID-only Two-Tower baseline。暂时不进入负采样实验、LogQ、温度扫描或文本 embedding。
