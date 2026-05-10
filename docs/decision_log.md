@@ -160,3 +160,43 @@ Movies_and_TV Phase 1 preprocess 规则。
 ### 对后续开发的影响
 
 下一步可以先运行 5-core 预处理，检查输出规模、cold item 比例和文件完整性；确认无误后再运行 3-core 对照版本。
+
+## Decision 编号：DECISION-20260510-003
+
+### 决策时间
+
+2026-05-10
+
+### 决策主题
+
+确认 Movies_and_TV 5-core 作为 Phase 1 主实验版本，并完成 ItemCF baseline。
+
+### 背景
+
+Movies_and_TV 已被确定为 Phase 1 主实验数据集。5-core preprocess 已完成，并生成统一的 train/valid/test 切分，可用于 ItemCF、ID-only Two-Tower 和后续 Text-enhanced Two-Tower 的公平比较。
+
+### 核心数据规模
+
+- users：505425
+- items：155957
+- interactions：5413083
+- test cold item ratio：0.1889%，可接受
+
+### ItemCF baseline 结果
+
+- ItemCF baseline 已完成。
+- `Recall@50 = 0.083559`
+- `NDCG@50 = 0.034553`
+- `MRR@50 = 0.021777`
+
+### 最终确认
+
+确认 `Movies_and_TV 5-core` 作为 Phase 1 主实验版本。后续 ID-only Two-Tower 需要至少超过 ItemCF `Recall@50=0.083559`，才说明深度召回相对传统共现 baseline 有增益。
+
+### 对实验可比性的影响
+
+ItemCF、ID-only Two-Tower 和 Text-enhanced Two-Tower 必须使用同一套 `data/processed/movies_tv_5core/` 数据切分，并保持一致的 cold item 排除策略和 seen item 过滤口径。
+
+### 对后续开发的影响
+
+明日优先任务是 ID-only Two-Tower baseline。暂时不进入负采样实验、LogQ、温度扫描或文本 embedding。
