@@ -108,3 +108,52 @@ All_Beauty 品类具有一次性消费特征，很多用户只购买或评价一
 - 明天优先扩展 `analyze_interactions.py` 支持多品类配置。
 - 候选品类先比较 Electronics、Video_Games、Movies_and_TV。
 - 生成 `outputs/category_comparison.md` 后，再决定 Phase 1 主数据集。
+
+## 普通 `nohup` 启动 3-core preprocess 后进程未存活
+
+- 严重程度：Low
+- 状态：已解决
+- 日期：2026-05-10
+
+### 现象
+
+启动 Movies_and_TV 3-core preprocess 后，第一次后台 PID `17961` 很快退出，`logs/preprocess_3core.log` 为空，`data/processed/movies_tv_3core/` 未创建。
+
+### 报错原文或关键日志
+
+没有 Python 报错输出。检查结果：
+
+```text
+logs/preprocess_3core.log size = 0
+ps -p 17961 无运行进程
+data/processed/movies_tv_3core 不存在
+```
+
+### 影响
+
+普通后台启动没有成功保持进程运行，但没有写入预处理输出，也没有覆盖已有数据。
+
+### 初步原因判断
+
+当前工具 shell 退出后，普通后台子进程没有稳定脱离会话。
+
+### 已尝试的排查步骤
+
+- 检查 `logs/preprocess_3core.log` 文件大小。
+- 检查 `data/processed/movies_tv_3core/` 是否创建。
+- 检查是否存在残留 preprocess 进程。
+- 确认 `.venv/bin/python` 可用。
+
+### 最终解决方案
+
+使用 `nohup setsid` 重新启动后台任务，使进程脱离当前 shell：
+
+```bash
+nohup setsid .venv/bin/python scripts/preprocess_amazon.py --config configs/preprocess_movies_tv_3core.yaml > logs/preprocess_3core.log 2>&1 < /dev/null &
+```
+
+新 PID 为 `18247`，日志已正常写入并显示 review 数据读取完成。该后台任务随后成功完成，生成 Movies_and_TV 3-core preprocess 结果。
+
+### 后续复用建议
+
+以后在当前工具环境中启动长时间后台任务时，优先使用 `nohup setsid ... > logs/<name>.log 2>&1 < /dev/null &`，并在 10-20 秒后检查日志和 PID。
