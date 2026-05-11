@@ -1,5 +1,5 @@
 data_dir: data/processed/movies_tv_5core
-output_dir: outputs/text_two_tower_movies_tv_5core_20epoch
+output_dir: outputs/text_two_tower_additive_movies_tv_5core_20epoch
 embedding_dim: 64
 batch_size: 4096
 learning_rate: 0.001
@@ -20,3 +20,4 @@ item_text_embedding_path: outputs/item_text_embeddings/movies_tv_5core/item_text
 item_has_text_path: outputs/item_text_embeddings/movies_tv_5core/item_has_text.npy
 text_proj_dim: 64
 use_has_text_mask: true
+item_fusion: additive

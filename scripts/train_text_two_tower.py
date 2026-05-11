@@ -1,6 +1,6 @@
 """Train text-enhanced Two-Tower (M6 v1).
 
-Item tower: id_embedding ⊕ text_projection → MLP → item_vec.
+Item tower: id_embedding + text_projection → item_vec  (additive residual fusion).
 User tower: id_embedding only (same as ID-only baseline).
 
 The existing train_two_tower.py (ID-only path) is NOT modified.
@@ -39,7 +39,7 @@ REQUIRED_CONFIG_KEYS = [
     "use_l2_norm", "seed", "eval_k_list", "eval_batch_size",
     "num_workers", "device", "save_best_by",
     "item_text_embedding_path", "item_has_text_path",
-    "text_proj_dim", "use_has_text_mask",
+    "text_proj_dim", "use_has_text_mask", "item_fusion",
 ]
 TRAIN_COLUMNS = ["user_idx", "item_idx"]
 EVAL_COLUMNS = ["user_idx", "item_idx", "is_cold_item_for_eval"]
@@ -58,10 +58,13 @@ TRAIN_LOG_FIELDS = [
 # ---------------------------------------------------------------------------
 
 class TextEnhancedTwoTower(nn.Module):
-    """Two-Tower with text-enhanced item tower.
+    """Two-Tower with text-enhanced item tower (additive residual fusion).
 
     User tower : Embedding(user_idx) → [L2 norm] → user_vec
-    Item tower : Embedding(item_idx) ⊕ Proj(frozen_text_emb) → MLP → [L2 norm] → item_vec
+    Item tower : Embedding(item_idx) + Proj(frozen_text_emb) → [L2 norm] → item_vec
+
+    Fusion is additive: item_vec = id_emb + text_proj (no MLP).
+    text_proj_dim must equal embedding_dim for additive fusion.
 
     text_emb and has_text are frozen buffers (persistent=False so they are NOT
     saved in the checkpoint—they are reloaded from disk on each run).
@@ -79,6 +82,11 @@ class TextEnhancedTwoTower(nn.Module):
         use_has_text_mask: bool,
     ) -> None:
         super().__init__()
+        if text_proj_dim != embedding_dim:
+            raise ValueError(
+                f"additive fusion requires text_proj_dim == embedding_dim, "
+                f"got text_proj_dim={text_proj_dim}, embedding_dim={embedding_dim}"
+            )
         self.use_l2_norm = use_l2_norm
         self.use_has_text_mask = use_has_text_mask
 
@@ -86,11 +94,7 @@ class TextEnhancedTwoTower(nn.Module):
         self.item_id_embedding = nn.Embedding(num_items, embedding_dim)
 
         text_input_dim = text_emb.shape[1]   # 384
-        self.text_proj = nn.Linear(text_input_dim, text_proj_dim, bias=False)
-        self.item_mlp = nn.Sequential(
-            nn.Linear(embedding_dim + text_proj_dim, embedding_dim, bias=True),
-            nn.ReLU(),
-        )
+        self.text_proj = nn.Linear(text_input_dim, embedding_dim, bias=False)
 
         # persistent=False: excluded from state_dict, reloaded from file
         self.register_buffer("_text_emb", text_emb.float(), persistent=False)
@@ -102,10 +106,10 @@ class TextEnhancedTwoTower(nn.Module):
 
     def _item_prenorm(self, item_idx: torch.Tensor) -> torch.Tensor:
         id_emb = self.item_id_embedding(item_idx)           # (B, D)
-        txt_proj = self.text_proj(self._text_emb[item_idx]) # (B, P)
+        txt_proj = self.text_proj(self._text_emb[item_idx]) # (B, D)
         if self.use_has_text_mask:
             txt_proj = txt_proj * self._has_text[item_idx].unsqueeze(-1)
-        return self.item_mlp(torch.cat([id_emb, txt_proj], dim=-1))  # (B, D)
+        return id_emb + txt_proj                             # additive fusion
 
     def encode_users(self, user_idx: torch.Tensor) -> torch.Tensor:
         u = self.user_embedding(user_idx)
@@ -275,7 +279,7 @@ def train_one_step(
         raise FloatingPointError("loss 出现 nan 或 inf，已停止。")
     loss.backward()
     optimizer.step()
-    return float(loss.item()), float(logits.min()), float(logits.max()), int(logits.shape[0])
+    return float(loss.item()), logits.detach().min().item(), logits.detach().max().item(), int(logits.shape[0])
 
 
 def run_smoke_checks(
@@ -393,7 +397,7 @@ def evaluate_once(
     with torch.no_grad():
         for start in range(0, len(non_cold), eval_bs):
             batch = non_cold.iloc[start : start + eval_bs]
-            u_t = torch.as_tensor(batch["user_idx"].to_numpy(dtype=np.int64), device=device)
+            u_t = torch.as_tensor(batch["user_idx"].to_numpy(dtype=np.int64, copy=True), device=device)
             tgt = torch.as_tensor(batch["item_idx"].to_numpy(dtype=np.int64), device=device)
             u_emb = model.encode_users(u_t)
             i_emb = item_emb_cpu.to(device)

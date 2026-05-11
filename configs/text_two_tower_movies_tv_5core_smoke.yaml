@@ -20,3 +20,4 @@ item_text_embedding_path: outputs/item_text_embeddings/movies_tv_5core/item_text
 item_has_text_path: outputs/item_text_embeddings/movies_tv_5core/item_has_text.npy
 text_proj_dim: 64
 use_has_text_mask: true
+item_fusion: additive

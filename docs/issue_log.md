@@ -954,3 +954,76 @@ float(logits.max().detach())
 ```
 
 后续有空时修复；修复后需重新 `py_compile` 确认语法。
+
+---
+
+## 2026-05-11 - Text-enhanced additive v1 增益有限，test 未超过 β 阈值
+
+- 严重程度：中等（影响简历叙事，但不阻塞训练链路）
+- 状态：Open
+- 日期：2026-05-11
+
+### 现象
+
+M6.2 additive residual text-enhanced Two-Tower 20 epoch full eval 完成后，test Recall@50 仅比 ID-only Two-Tower 提升 +0.001363（+2.56%），按预设阈值属于 borderline γ 分支：
+
+```text
+ID-only Two-Tower 20ep full test Recall@50 = 0.053198
+Additive text-enhanced 20ep full test Recall@50 = 0.054561
+absolute_gain = +0.001363
+relative_gain = +2.56%
+branch = γ（test < 0.055，borderline：差距 0.000439）
+```
+
+### 根因分析
+
+主要瓶颈是 **54.7% 的 test target item 没有真实文本**（has_text=0），text path 被 has_text mask 屏蔽，additive fusion 退化为 ID-only：
+
+```text
+has_text=1 target：224753 / 496470 = 45.27%  → Recall@50 = 0.070464
+has_text=0 target：271717 / 496470 = 54.73%  → Recall@50 = 0.041407
+```
+
+has_text=1 group 的提升是真实的（text 有效），但 has_text=0 group 占多数，拉低了整体指标。
+
+text embedding 覆盖率分布（全量 item）：
+
+```text
+title + description : 88243 / 153977 = 57.3%
+title only          : 6772  / 153977 = 4.4%
+description only    : 1     / 153977 = 0.0%
+fallback (parent_asin) : 58961 / 153977 = 38.3%
+```
+
+### 三方对比（Recall@50）
+
+| 方法 | valid | test |
+| --- | ---: | ---: |
+| clean ItemCF | 0.140698 | 0.083570 |
+| ID-only Two-Tower 20ep | 0.092144 | 0.053198 |
+| Additive text-enhanced 20ep | 0.093940 | 0.054561 |
+
+两个 Two-Tower 版本均远低于 clean ItemCF，text 增益绝对量小。
+
+### 影响
+
+- 当前简历叙事不能写"text-enhanced Two-Tower 超过 ItemCF 或超过纯 ID 模型"。
+- borderline γ 的定性是：text 有效但覆盖率限制了总体提升，不是架构错误。
+- additive v1 仍作为第一个干净 text-enhanced baseline 保留，为后续 ablation 提供参照点。
+
+### 潜在后续实验方向（待讨论）
+
+1. **扩充 text 覆盖率**：补充 item categories / features 等字段，降低 has_text=0 比例。
+2. **popularity correction / frequency-based re-weighting**：两个 Two-Tower 模型都低于 ItemCF，popularity bias 是潜在方向。
+3. **更大 text encoder 或 fine-tune text projection**：当前 Linear(384→64) projection frozen text，可尝试更大 projection 或 unfreezing。
+4. **LogQ correction**：解决 in-batch negative popularity bias。
+
+### 后续复用建议
+
+当前 additive v1 作为正式 text-enhanced baseline，输出目录固定为：
+
+```text
+outputs/text_two_tower_additive_movies_tv_5core_20epoch/
+```
+
+后续任何新的 text fusion 变体需使用新的 `output_dir`，不覆盖当前输出。
