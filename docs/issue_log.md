@@ -1027,3 +1027,34 @@ outputs/text_two_tower_additive_movies_tv_5core_20epoch/
 ```
 
 后续任何新的 text fusion 变体需使用新的 `output_dir`，不覆盖当前输出。
+
+### 2026-05-11 D1+D2 诊断证据追加
+
+**D1：ID-only has_text split**
+
+| has_text | ID-only R@50 | Text-enhanced R@50 | delta |
+| --- | ---: | ---: | ---: |
+| 1（有文本） | 0.068173 | 0.070464 | +0.002291 |
+| 0（无文本） | 0.040811 | 0.041407 | +0.000596 |
+
+- has_text=1 group 增益为 +0.002291（+3.4%），text signal 有效。
+- has_text=0 group 增益接近零（+0.000596），additive fusion 退化为 ID-only，mask 有效。
+
+**D2：popularity bucket × model matrix（test Recall@50）**
+
+| bucket | ItemCF | ID-only | Text-enhanced |
+| --- | ---: | ---: | ---: |
+| ≤5 | 0.040405 | 0.023284 | 0.024197 |
+| 6–20 | 0.047940 | 0.043748 | 0.046240 |
+| 21–100 | 0.060890 | 0.062918 | 0.064433 |
+| >100 | 0.122522 | 0.054604 | 0.055465 |
+
+- ItemCF 在 >100 热门 bucket（42.8% targets）上大幅领先（0.1225 vs 0.0546）。这是 ItemCF 整体优于 Two-Tower 的主要来源。
+- Two-Tower 在 21–100 中等热度 bucket 持平或略优于 ItemCF。
+- text-enhanced 在所有 bucket 上均小幅优于 ID-only。
+
+**影响更新**
+
+- 简历叙事应重点描述 popularity bucket 结构性差异，而非整体 Recall 数字。
+- 当前最强叙事：ItemCF 依赖局部共现（热门 item 强）；Two-Tower 依赖全局 embedding（中等热度 item 有泛化优势）；text-enhanced 在有真实元数据的 item 上有实质增益。
+- 推迟 hybrid retrieval 和进一步架构调参至 5/15 之后。

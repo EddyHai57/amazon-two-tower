@@ -660,3 +660,59 @@ B。
 - 当前不进入 text encoder fine-tune、更大 projection dim、LogQ、temperature sweep 或 popularity correction。
 - 后续实验方向留待 Eddy 确认优先级。
 - additive v1 的 has_text split 和 popularity bucket 输出（6 个 JSON/md 文件）作为后续增强实验的对照参考。
+
+## Decision 编号：DECISION-20260511-006
+
+### 决策时间
+
+2026-05-11
+
+### 决策主题
+
+D1+D2 诊断完成后停止 5/15 前模型调参，当前诊断证据已足够支撑简历叙事。
+
+### 背景
+
+D1 ID-only has_text split 和 D2 三模型 popularity bucket 矩阵已完成。
+
+D1 关键证据：
+
+```text
+has_text=1: ID-only R@50=0.068173, text-enhanced R@50=0.070464, delta=+0.002291
+has_text=0: ID-only R@50=0.040811, text-enhanced R@50=0.041407, delta=+0.000596
+```
+
+D2 关键证据：
+
+```text
+>100 bucket (42.8% targets): ItemCF R@50=0.122522 vs Two-Tower ~0.055（ItemCF 约 2.2×）
+21–100 bucket (32.6% targets): ID-only R@50=0.062918, text-enh R@50=0.064433（略优于 ItemCF 0.060890）
+text-enhanced 在所有 bucket 均小幅优于 ID-only
+```
+
+### 可选方案
+
+- A. 继续调参：text_proj_dim=128、concat+MLP v2、hybrid retrieval，目标突破 β 阈值。
+- B. 接受当前 D1+D2 诊断结果，停止模型实验，进入日志整理和简历叙事提炼阶段。
+
+### 最终选择
+
+B。
+
+### 选择原因
+
+- D1+D2 提供了足够的证据用于简历叙事：text 对有元数据 item 有效（+3.4%），ItemCF 对热门 item 优势显著，Two-Tower 对中等热度 item 有泛化优势。
+- 继续 text_proj_dim / concat+MLP / hybrid 调参在 5/15 前 ROI 低，且存在过拟合风险。
+- 当前叙事已完整：ItemCF baseline → ID-only Two-Tower → additive text-enhanced → 结构性 D1+D2 诊断分析。
+- 进一步调参留待 5/15 后根据反馈决定。
+
+### 对实验可比性的影响
+
+- 已有的三组 overall Recall@50 + has_text split + popularity bucket 形成完整对比体系，不需要再引入新 baseline。
+- 5/15 后新实验可在此基础上增量叠加，不影响当前记录的 baseline 数字。
+
+### 对后续开发的影响
+
+- 5/15 前：整理 docs、代码 push、提炼简历叙事。
+- 5/15 后：视反馈决定是否继续 popularity correction / hybrid retrieval / text 覆盖率扩充。
+- 不做 text_proj_dim=128、concat+MLP v2、LogQ、temperature sweep 或 negative sampling 实验。
