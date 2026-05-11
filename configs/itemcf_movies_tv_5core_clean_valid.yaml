@@ -1,0 +1,8 @@
+data_dir: data/processed/movies_tv_5core
+output_dir: outputs/itemcf_movies_tv_5core_clean_valid
+eval_split: valid
+eval_seen_filter: train
+k_list: [20, 50, 100]
+sim_topk: 100
+max_user_history: 100
+seed: 42

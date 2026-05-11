@@ -556,3 +556,74 @@ Two-Tower diagnostic Recall@50=0.046746
 ```
 
 处理结果：脚本已改为 `to_numpy(dtype=np.int64, copy=True)` 并通过 `py_compile`；未重新跑完整诊断。
+
+### 2026-05-11 追加诊断 A：clean ItemCF full valid eval
+
+本次目标：验证同一 clean split 上 ItemCF 是否也存在类似 valid-test gap。
+
+本次新增配置：
+
+```text
+configs/itemcf_movies_tv_5core_clean_valid.yaml
+```
+
+本次输出目录：
+
+```text
+outputs/itemcf_movies_tv_5core_clean_valid/
+```
+
+本次没有启动 Two-Tower，没有训练，没有调参，没有覆盖 `outputs/itemcf_movies_tv_5core_clean/`。
+
+valid eval seen mask 口径：
+
+```text
+eval_split=valid
+eval_seen_filter=train
+valid evaluation 过滤 train seen items
+允许当前 valid target 作为候选
+exclude is_cold_item_for_eval=True
+```
+
+clean ItemCF valid 指标：
+
+```text
+num_eval_users=497137
+num_skipped_cold_users=312
+num_no_recommendation_users=0
+Recall@20=0.11312575809082809
+Recall@50=0.1406976346560405
+Recall@100=0.16352836340887925
+NDCG@20=0.06192890723311102
+NDCG@50=0.06740399170896363
+NDCG@100=0.07110182453591324
+MRR@20=0.04705190895483009
+MRR@50=0.04793296612989793
+MRR@100=0.048257025866777686
+```
+
+与 clean ItemCF test 对比：
+
+```text
+clean ItemCF valid Recall@50=0.1406976346560405
+clean ItemCF test Recall@50=0.08357000422986283
+absolute_drop=0.05712763042617767
+relative_drop_from_valid=40.60%
+```
+
+诊断判断：
+
+- ItemCF 在 clean valid/test 上也存在明显 gap，valid 到 test 的 `Recall@50` 相对下降约 40.60%。
+- Two-Tower valid 到 test 的 `Recall@50` 相对下降约 42.71%，量级接近 ItemCF。
+- 因此当前 valid-test gap 更可能来自 clean split 本身的难度差异或时间推进带来的目标变化，而不是 Two-Tower pipeline 特有 evaluation bug。
+- Two-Tower test 仍明显低于 ItemCF test，Two-Tower 模型能力问题仍存在，但 valid-test gap 本身不能只归因于 Two-Tower pipeline。
+- issue 仍保持 Open，不建议直接进入 20/25/30 epoch full training。
+- 后续不建议继续把 Two-Tower eval bug 作为第一优先级。
+- 下一阶段建议讨论 `text-enhanced item tower`、popularity correction、longer training ablation 的优先级。
+- 当前更推荐先做 `text-enhanced item tower` 作为主线增强。
+
+报告文案修正：
+
+- 初次生成的 `outputs/itemcf_movies_tv_5core_clean_valid/itemcf_run_report.md` 复用了 test eval seen mask 文案。
+- 已最小修改 `scripts/run_itemcf.py`，使报告按 `eval_split` 输出 seen mask 说明。
+- 重新运行 clean ItemCF valid eval 后，报告已正确记录：`valid eval 过滤 train seen items，并允许当前 valid target 作为候选。`

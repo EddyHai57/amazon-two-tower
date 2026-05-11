@@ -307,6 +307,12 @@ def write_metrics_md(path: Path, metrics: dict[str, Any]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def seen_mask_description(metrics: dict[str, Any]) -> str:
+    if metrics["eval_split"] == "valid":
+        return "- valid eval 过滤 train seen items，并允许当前 valid target 作为候选。"
+    return "- test eval 过滤 train + valid seen items，并允许当前 test target 作为候选。"
+
+
 def write_summary_md(path: Path, config: dict[str, Any], stats: dict[str, Any], metrics: dict[str, Any]) -> None:
     lines = [
         "# Movies_and_TV 5-core ItemCF baseline 评估摘要",
@@ -326,7 +332,7 @@ def write_summary_md(path: Path, config: dict[str, Any], stats: dict[str, Any], 
         "- 相似度：`co_count(i, j) / sqrt(count(i) * count(j))`",
         "- 共现统计使用每个用户最近 `max_user_history` 个去重 train item。",
         "- 推荐时过滤 `eval_seen_filter` 指定的 seen items。",
-        "- clean test eval 使用 train + valid seen mask，并显式允许当前 test target 作为候选。",
+        seen_mask_description(metrics),
         "- `is_cold_item_for_eval=True` 的 target 不参与指标计算。",
         f"- `sim_topk`：{metrics['sim_topk']}",
         f"- `max_user_history`：{metrics['max_user_history']}",
@@ -365,7 +371,7 @@ def write_run_report(path: Path, config: dict[str, Any], stats: dict[str, Any], 
         f"- eval_split：`{metrics['eval_split']}`",
         f"- eval_seen_filter：`{metrics['eval_seen_filter']}`",
         "- `is_cold_item_for_eval=True` 的 target 不参与指标计算。",
-        "- test eval 过滤 train + valid seen items，并允许当前 test target 作为候选。",
+        seen_mask_description(metrics),
         "",
         "## 4. ItemCF 设置",
         "",
