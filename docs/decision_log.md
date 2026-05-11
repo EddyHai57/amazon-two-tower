@@ -479,3 +479,122 @@ clean ID-only Two-Tower 5 epoch full eval 存在明显 valid-test gap，并且 f
 ### 对后续开发的影响
 
 下一步只准备并启动 clean ID-only Two-Tower 20 epoch baseline。20 epoch 结果出来前，不进入 text-enhanced item tower、LogQ、temperature sweep 或 negative sampling。
+
+## Decision 编号：DECISION-20260511-002
+
+### 决策时间
+
+2026-05-11
+
+### 决策主题
+
+M6 text-enhanced item tower 的 fusion 策略：ID backbone + projected text + has_text mask，而非 pure text tower。
+
+### 背景
+
+M5.5 pure text retrieval 显示 pure text 检索效果（valid Recall@50=0.028160）明显弱于 ItemCF（valid Recall@50=0.140698）和 ID-only Two-Tower（valid Recall@50=0.092144）。根因是 38.3% item 缺少真实文本，fallback embedding 无语义；且 54.5% 的 test target item 属于 has_text=0。
+
+### 可选方案
+
+- A. 纯 text tower 替代 ID embedding。
+- B. ID embedding 主干 + projected text embedding + has_text mask 屏蔽无文本 item。
+
+### 最终选择
+
+B。
+
+### 选择原因
+
+- Pure text（方案 A）对 has_text=0 item 几乎无召回能力（Recall@50≈0.0016-0.0019），在本数据集上不可行。
+- ID embedding 是经过训练的协同过滤信号，是主干。
+- Text embedding 作为辅助 side feature，对 has_text=1 item 提供语义信号。
+- has_text mask 保证 has_text=0 item 的 text path 输出为 0，不引入噪声。
+
+### 对实验可比性的影响
+
+M6 的 item tower 与 ID-only Two-Tower（ID 主干，无 text）相比，text fusion 只在 has_text=1 item 上起作用，对比是受控的。
+
+### 对后续开发的影响
+
+M6.1 已按此方案实现 smoke test，M6.2 正式训练沿用同一架构，不再讨论 pure text 替代方案。
+
+## Decision 编号：DECISION-20260511-003
+
+### 决策时间
+
+2026-05-11
+
+### 决策主题
+
+Item text embedding 使用 all-MiniLM-L6-v2，dim=384，作为 frozen item-side feature。
+
+### 背景
+
+M5.2 全量 embedding 已使用 sentence-transformers/all-MiniLM-L6-v2 生成，shape=(153977, 384)，所有 item 均为 unit-norm，无零行（fallback 为 parent_asin）。
+
+### 最终选择
+
+冻结 all-MiniLM-L6-v2 输出的 embedding，不做 fine-tune。用 Linear(384→64) projection 层将其对齐到 ID embedding 维度。Projection 层是可训练的，embedding 本身为 frozen buffer（persistent=False）。
+
+### 选择原因
+
+- all-MiniLM-L6-v2 是轻量、高质量的 sentence-level encoder，适合 title + description 文本。
+- 全量 embedding 已预先生成（236 MB npy），作为 frozen buffer 加载，无需训练时在线 encode。
+- persistent=False 避免 checkpoint 体积膨胀（text buffer 不写入 state_dict，从文件重加载）。
+- Projection 层可训练，允许模型在 InfoNCE 目标下学习如何利用 text signal。
+
+### 对实验可比性的影响
+
+M6.2 full eval 可在同一候选集上与 ID-only Two-Tower 和 pure text retrieval 做三方对比：
+
+| 方法 | text 使用方式 |
+| --- | --- |
+| pure text retrieval | 直接用 text embedding 做检索 |
+| ID-only Two-Tower | 无 text |
+| text-enhanced Two-Tower (M6) | ID + frozen text proj + has_text mask |
+
+### 对后续开发的影响
+
+text embedding 文件路径已写入配置：`outputs/item_text_embeddings/movies_tv_5core/item_text_embedding.npy`。若后续切换更大的 encoder，需重新生成 npy 并更新 config。
+
+## Decision 编号：DECISION-20260511-004
+
+### 决策时间
+
+2026-05-11
+
+### 决策主题
+
+M6.2 正式训练先只看 valid，暂不启动 test eval。
+
+### 背景
+
+M6.1 smoke test 通过。正式 20 epoch 训练配置已就绪。
+
+### 决策内容
+
+- M6.2 正式训练（20 epoch）期间，每 epoch 只在 valid set 上评估（`eval_max_users=50000`）。
+- 训练完成后先基于 valid 指标确认最优 checkpoint。
+- test eval 不在训练过程中自动运行，避免过拟合 test split 的早停判断。
+- test eval 单独作为 M7 阶段执行，并与 ItemCF 和 ID-only Two-Tower 做三方对比。
+
+### 选择原因
+
+clean Two-Tower 20 epoch 训练过程中，valid Recall@50 在 epoch 18 最优，epoch 19/20 略有回落。text-enhanced 模型也可能出现类似平台期，应通过 valid 监控，而非提前用 test 锚定 checkpoint。
+
+### 对实验可比性的影响
+
+M6.2 对应 `save_best_by: valid_recall@50`（已写入 20epoch config）。最终 test eval 将在 M7 阶段统一用 eval-only 模式跑全量用户，口径与 clean ItemCF 和 ID-only Two-Tower 对齐。
+
+### 对后续开发的影响
+
+M7 三方对比命令（待 M6.2 完成后执行，不在本次安排范围）：
+
+```bash
+# Text-enhanced Two-Tower full eval（M7，待执行）
+.venv/bin/python scripts/train_text_two_tower.py \
+  --config configs/text_two_tower_movies_tv_5core_20epoch.yaml \
+  --eval_only \
+  --checkpoint outputs/text_two_tower_movies_tv_5core_20epoch/checkpoints/best_model.pt \
+  --eval_split both
+```

@@ -809,9 +809,9 @@ MRR@50=0.013541905091225163
   user_tensor = torch.as_tensor(batch["user_idx"].to_numpy(dtype=np.int64), device=device)
 ```
 
-## 2026-05-11 - text-enhanced item tower 尚未实现
+## 2026-05-11 - text-enhanced item tower 尚未实现（已解决）
 
-状态：Open
+状态：Resolved（M6.1 已实现 smoke test）
 
 本次尝试：
 
@@ -830,3 +830,127 @@ MRR@50=0.013541905091225163
 
 - Pending。
 - 需要先确认 item feature artifact、text representation、fusion 方式和 smoke test config，再启动 text-enhanced full training。
+
+### 2026-05-11 更新
+
+M6.1 已完成：
+
+- `scripts/train_text_two_tower.py` 已实现，smoke test PASS。
+- item feature artifact：`outputs/item_text_embeddings/movies_tv_5core/item_text_embedding.npy` 和 `item_has_text.npy` 已生成。
+- 状态更新为 Resolved。
+
+---
+
+## 2026-05-11 - 38.3% item 缺少 title/description，text embedding 只能 fallback parent_asin
+
+- 严重程度：中等
+- 状态：Mitigated（通过 has_text mask 缓解）
+- 日期：2026-05-11
+
+### 现象
+
+在 M5.2 生成全量 item text embedding 时，发现 153977 个 item 中有 58961 个（38.3%）同时缺少 title 和 description，只能用 parent_asin 作为文本输入。
+
+### 影响
+
+- 这 38.3% 的 item 的 text embedding 不含语义信息，接近随机方向。
+- M5.5 pure text retrieval 证实：target has_text=0 item 的 Recall@50 在 valid 和 test 上只有约 0.0019 和 0.0016。
+- 如果 M6 对所有 item 等权使用 text embedding，fallback embedding 会引入噪声，误导模型。
+
+### 已确认数据
+
+```text
+title + description : 88243 / 153977 = 57.3%
+title only          : 6772  / 153977 = 4.4%
+description only    : 1     / 153977 = 0.0%
+fallback (empty)    : 58961 / 153977 = 38.3%
+```
+
+target item has_text=0 ratio（M5.5 eval）：
+
+```text
+valid target has_text=0 ratio = 54.5%
+test  target has_text=0 ratio = 54.5%
+```
+
+### 已缓解措施
+
+M6.1 中通过 `has_text mask` 处理：对 `has_text=False` 的 item，text_proj 输出乘以 0（屏蔽），使其 text path 不参与 fusion。
+
+具体：
+
+```python
+txt_proj = txt_proj * self._has_text[item_idx].unsqueeze(-1)
+# _has_text: bool -> float, has_text=False 的 item text_proj 被置 0
+```
+
+### 后续复用建议
+
+M6.2 正式训练使用 `use_has_text_mask: true`（已写入 config），无需额外操作。若后续引入新的 text 特征（categories、features 等），需同步更新 has_text mask 构建逻辑。
+
+---
+
+## 2026-05-11 - sentence-transformers 安装时 huggingface_hub 版本升级
+
+- 严重程度：低
+- 状态：观察中（当前无已知问题）
+- 日期：2026-05-11
+
+### 现象
+
+安装 sentence-transformers 时，huggingface_hub 从 `0.36.2` 升级到 `1.14.0`，超出原先固定版本范围。
+
+### 影响
+
+- datasets `2.17.0` 内部依赖 huggingface_hub；版本不匹配理论上存在兼容风险。
+- 当前实际运行未发现错误：`load_dataset` 和 sentence-transformers model loading 均正常。
+- item text embedding（M5.2）和 pure text retrieval（M5.5）均正常完成。
+
+### 当前状态
+
+- 暂不回滚。
+- 若后续 `load_dataset` 出现兼容性错误，优先考虑在 `.venv` 中 pin `huggingface_hub<1.0.0` 并重新安装。
+
+### 后续复用建议
+
+每次在 `.venv` 中安装新包时，检查 `huggingface_hub` 版本是否被升级，避免对 `datasets` 产生意外影响。
+
+---
+
+## 2026-05-11 - M6.1 train_text_two_tower.py 存在 UserWarning（非阻塞）
+
+- 严重程度：低（不影响训练）
+- 状态：Open（可后续修复）
+- 日期：2026-05-11
+
+### 现象
+
+smoke test 运行期间出现 PyTorch warning：
+
+```text
+UserWarning: Converting a tensor with requires_grad=True to a scalar,
+which will raise an error in a future PyTorch release.
+```
+
+发生位置：`scripts/train_text_two_tower.py` 中 `float(logits.min())` 和 `float(logits.max())` 诊断日志。
+
+### 影响
+
+- 不影响梯度计算、训练过程或 checkpoint 质量。
+- 仅影响第一个 epoch 的诊断日志输出。
+- M6.2 正式训练期间会持续出现该 warning，但不会导致训练失败。
+
+### 当前状态
+
+Open。smoke test 已确认此 warning 不阻塞训练，目前不修复。
+
+### 建议修复方案
+
+将相关行改为：
+
+```python
+float(logits.min().detach())
+float(logits.max().detach())
+```
+
+后续有空时修复；修复后需重新 `py_compile` 确认语法。
