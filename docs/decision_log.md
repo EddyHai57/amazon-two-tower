@@ -438,3 +438,44 @@ clean ItemCF `Recall@50=0.083570` 仍是当前正式传统 baseline。clean Two-
 - 按 user history length 分桶的 `Recall@50`。
 - ItemCF hit 但 Two-Tower miss 的样本类型。
 - Two-Tower hit 但 ItemCF miss 的样本类型。
+
+## Decision 编号：DECISION-20260511-001
+
+### 决策时间
+
+2026-05-11
+
+### 决策主题
+
+clean ItemCF valid/test gap 确认后，下一步先做 clean ID-only Two-Tower 20 epoch baseline。
+
+### 背景
+
+clean ID-only Two-Tower 5 epoch full eval 存在明显 valid-test gap，并且 full test 指标低于 clean ItemCF test baseline。随后补充运行 clean ItemCF full valid eval，用于判断 valid-test gap 是否是 Two-Tower-specific evaluation bug。
+
+### 已确认事实
+
+- clean ItemCF：
+  - valid `Recall@50=0.140698`
+  - test `Recall@50=0.083570`
+  - relative drop：约 40.60%
+- clean ID-only Two-Tower 5 epoch：
+  - full valid `Recall@50=0.081591`
+  - full test `Recall@50=0.046746`
+  - relative drop：约 42.71%
+- ItemCF 和 Two-Tower 在 clean split 上都有同量级 valid-test gap。
+
+### 决策内容
+
+- valid-test gap 不再作为 Two-Tower-specific evaluation bug 继续追。
+- 当前 open issue 调整为：`ID-only Two-Tower test baseline underperforms ItemCF`。
+- 下一步先做 clean ID-only Two-Tower 20 epoch baseline，用于验证 5 epoch 欠拟合假设。
+- 暂不做 text-enhanced、LogQ、temperature sweep 或 negative sampling。
+
+### 对实验可比性的影响
+
+20 epoch baseline 仍应使用 clean Movies_and_TV 5-core 数据、同一 train/valid/test split，以及与 clean Two-Tower full eval 一致的 seen item mask 和 cold item 排除口径。该运行用于判断训练轮数是否是 ID-only Two-Tower underperform 的主要原因，不应与 text-enhanced 或其他增强实验混在同一结论中。
+
+### 对后续开发的影响
+
+下一步只准备并启动 clean ID-only Two-Tower 20 epoch baseline。20 epoch 结果出来前，不进入 text-enhanced item tower、LogQ、temperature sweep 或 negative sampling。

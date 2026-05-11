@@ -627,3 +627,206 @@ relative_drop_from_valid=40.60%
 - 初次生成的 `outputs/itemcf_movies_tv_5core_clean_valid/itemcf_run_report.md` 复用了 test eval seen mask 文案。
 - 已最小修改 `scripts/run_itemcf.py`，使报告按 `eval_split` 输出 seen mask 说明。
 - 重新运行 clean ItemCF valid eval 后，报告已正确记录：`valid eval 过滤 train seen items，并允许当前 valid target 作为候选。`
+
+### 2026-05-11 当前问题调整
+
+根据 clean ItemCF full valid eval，当前 open issue 不再按 Two-Tower-specific evaluation bug 继续追。问题调整为：
+
+```text
+ID-only Two-Tower test baseline underperforms ItemCF
+```
+
+已确认事实：
+
+```text
+clean ItemCF valid Recall@50=0.140698
+clean ItemCF test Recall@50=0.083570
+clean ItemCF relative_drop_from_valid≈40.60%
+clean ID-only Two-Tower valid Recall@50=0.081591
+clean ID-only Two-Tower test Recall@50=0.046746
+clean ID-only Two-Tower relative_drop_from_valid≈42.71%
+```
+
+判断：
+
+- ItemCF 和 Two-Tower 在 clean split 上都有同量级 valid-test gap。
+- 因此 large valid-test gap 不再像是 Two-Tower-specific evaluation bug。
+- 更合理的解释是 leave-one-out + valid/test seen mask 口径下存在 split-level difficulty shift，test target 更难预测。
+- 当前真正问题是 ID-only Two-Tower test `Recall@50=0.046746` 明显低于 clean ItemCF test `Recall@50=0.083570`。
+
+下一步：
+
+- 先做 clean ID-only Two-Tower 20 epoch baseline，验证 5 epoch 欠拟合假设。
+- 暂不做 text-enhanced、LogQ、temperature sweep 或 negative sampling。
+- issue 仍保持 Open，后续根据 20 epoch baseline 结果再判断是否需要进入 text-enhanced item tower 或其他增强方向。
+
+### 2026-05-11 追加记录：clean ID-only Two-Tower 20 epoch baseline
+
+本次目标：验证 clean ID-only Two-Tower 5 epoch 是否欠拟合。
+
+本次新增配置：
+
+```text
+configs/two_tower_movies_tv_5core_clean_20epoch.yaml
+```
+
+本次输出：
+
+```text
+outputs/two_tower_movies_tv_5core_clean_20epoch/
+logs/two_tower_clean_20epoch.log
+```
+
+本次没有做 text-enhanced、LogQ、temperature sweep、negative sampling，没有修改 preprocess 数据，没有重跑 ItemCF。
+
+运行确认：
+
+```text
+device=cuda
+n_users=497449
+n_items=153977
+train interactions=4319438
+valid interactions=497449
+test interactions=497449
+epoch 1 first batch similarity min/max=-8.586546 / 8.787075
+```
+
+训练结果：
+
+```text
+best_epoch=18
+best_valid_recall@50=0.091520
+best checkpoint=outputs/two_tower_movies_tv_5core_clean_20epoch/checkpoints/best_model.pt
+```
+
+核心趋势：
+
+```text
+epoch 1 train_loss=9.428876 valid Recall@50=0.025940
+epoch 5 train_loss=4.099209 valid Recall@50=0.081220
+epoch 10 train_loss=3.609980 valid Recall@50=0.087960
+epoch 15 train_loss=3.416934 valid Recall@50=0.089460
+epoch 18 train_loss=3.345820 valid Recall@50=0.091520
+epoch 20 train_loss=3.308424 valid Recall@50=0.090820
+```
+
+与 5 epoch 结果对比：
+
+```text
+5 epoch valid subset Recall@50=0.081220
+20 epoch best valid subset Recall@50=0.091520
+absolute_improvement=0.010300
+relative_improvement≈12.68%
+```
+
+诊断判断：
+
+- 20 epoch training 正常完成，未发现 `OOM`、`Killed`、`Traceback`、`nan`、`inf`、`FloatingPointError` 或 `RuntimeError`。
+- train_loss 持续下降，说明 5 epoch 确实偏欠拟合。
+- valid `Recall@50` 到 epoch 18 达到最高，epoch 19/20 略有回落，说明后期接近平台。
+- 20 epoch best valid `Recall@50=0.091520` 仍明显低于 clean ItemCF valid `Recall@50=0.140698`，ID-only Two-Tower underperform 问题仍未解决。
+- 下一步建议用 eval-only 跑 20 epoch best checkpoint 的 clean full valid / test，再判断 test 指标是否改善。
+
+本次运行期间出现一次 PyTorch warning：
+
+```text
+/workspace/amazon-two-tower/scripts/train_two_tower.py:419: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  user_tensor = torch.as_tensor(batch["user_idx"].to_numpy(dtype=np.int64), device=device)
+```
+
+### 2026-05-11 追加记录：20 epoch best checkpoint full eval
+
+本次任务严格 eval-only，未 retrain，未修改 preprocess，未启动 text-enhanced、LogQ、temperature sweep、negative sampling 或 ItemCF。
+
+加载 checkpoint：
+
+```text
+outputs/two_tower_movies_tv_5core_clean_20epoch/checkpoints/best_model.pt
+```
+
+该 checkpoint 对应 `best_epoch=18`。
+
+输出目录：
+
+```text
+outputs/two_tower_movies_tv_5core_clean_20epoch_full_eval/
+```
+
+执行命令：
+
+```bash
+source .venv/bin/activate && python scripts/train_two_tower.py --config configs/two_tower_movies_tv_5core_clean_20epoch.yaml --eval_only --checkpoint outputs/two_tower_movies_tv_5core_clean_20epoch/checkpoints/best_model.pt --eval_split both --eval_output_dir outputs/two_tower_movies_tv_5core_clean_20epoch_full_eval
+```
+
+full valid 指标：
+
+```text
+num_eval_users=497137
+num_skipped_cold_users=312
+candidate_count_min=153907
+candidate_count_max=153974
+target_item_in_candidate_range=true
+topk_shape=[256, 100]
+eval_batch_size=256
+Recall@20=0.06710826190768339
+Recall@50=0.09214361433568614
+Recall@100=0.1167726401374269
+NDCG@50=0.039984435523071675
+MRR@50=0.02665389295939516
+```
+
+full test 指标：
+
+```text
+num_eval_users=496470
+num_skipped_cold_users=979
+candidate_count_min=153906
+candidate_count_max=153973
+target_item_in_candidate_range=true
+topk_shape=[256, 100]
+eval_batch_size=256
+Recall@20=0.036578242391282455
+Recall@50=0.05319757487864322
+Recall@100=0.07086228775152577
+NDCG@50=0.021494396747563677
+MRR@50=0.013541905091225163
+```
+
+对比结论：
+
+- 20 epoch full valid `Recall@50=0.092144`。
+- 20 epoch full test `Recall@50=0.053198`。
+- valid/test gap 仍存在，relative drop 约 42.27%。
+- 20 epoch full test 仍低于 clean ItemCF test `Recall@50=0.083570`。
+- 20 epoch 相比 5 epoch 有提升，但提升有限；结合 epoch 14-20 平台期，结果支持 ID-only representation ceiling 判断。
+- 不建议继续增加 epoch。
+- 结果支持下一步转向 `text-enhanced item tower`。
+
+本次 eval-only 期间出现同类 PyTorch warning：
+
+```text
+/workspace/amazon-two-tower/scripts/train_two_tower.py:419: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  user_tensor = torch.as_tensor(batch["user_idx"].to_numpy(dtype=np.int64), device=device)
+```
+
+## 2026-05-11 - text-enhanced item tower 尚未实现
+
+状态：Open
+
+本次尝试：
+
+- 检查 text-enhanced item tower 是否已有实现或部分实现。
+- 检查范围包括 configs、`scripts/train_two_tower.py`、`scripts/preprocess_amazon.py`、processed clean data schema、`docs/data_notes.md`、`outputs/inspection_movies_and_tv.md`。
+
+发现：
+
+- 当前 `text-enhanced item tower` 尚未实现。
+- 现有 Two-Tower training pipeline 是 ID-only，dataloader 只读取 `user_idx` / `item_idx`。
+- 当前 model 只包含 user/item ID embedding，没有 item text/title/category/meta encoder 或 fusion。
+- 当前 processed clean data 不包含 item text/meta feature artifact。
+- raw metadata 中存在可用 item-side 字段：`title`、`description`、`features`、`categories`、`main_category`，可通过 `parent_asin` 与 processed item mapping 对齐。
+
+当前状态：
+
+- Pending。
+- 需要先确认 item feature artifact、text representation、fusion 方式和 smoke test config，再启动 text-enhanced full training。
