@@ -480,8 +480,79 @@ eval-only 完成：{"checkpoint": "outputs/two_tower_movies_tv_5core_clean_overn
 
 ### 当前状态
 
-Open。clean full eval 已完成，但尚未做新的 clean gap diagnosis。
+Open。clean full eval 已完成，2026-05-11 已完成 clean gap diagnosis，但尚未关闭 issue。
 
 ### 后续复用建议
 
 下一步先分析 clean valid-test gap，不要直接进入 20/25/30 epoch full training、text embedding、LogQ、temperature sweep 或 negative sampling ablation。
+
+### 2026-05-11 追加诊断记录
+
+本次新增并运行 `scripts/diagnose_clean_two_tower_gap.py`，只做诊断，不训练、不调参、不重跑正式 baseline。
+
+生成输出：
+
+```text
+outputs/clean_two_tower_gap_diagnosis.md
+outputs/clean_two_tower_gap_diagnosis.json
+```
+
+Two-Tower item popularity bucket `Recall@50`：
+
+```text
+<=5: valid=0.030506, test=0.017206
+6-10: valid=0.047532, test=0.028045
+11-20: valid=0.063839, test=0.039357
+21-100: valid=0.083437, test=0.050934
+101-500: valid=0.089584, test=0.051666
+>500: valid=0.103644, test=0.056632
+```
+
+Two-Tower user history length bucket `Recall@50`：
+
+```text
+3-5: valid=0.097054, test=0.053495
+6-10: valid=0.074147, test=0.043644
+11-20: valid=0.053494, test=0.034030
+21-50: valid=0.039707, test=0.028693
+>50: valid=0.025755, test=0.022680
+```
+
+Two-Tower rank sanity check：
+
+```text
+valid Recall@20=0.059959, Recall@50=0.081591, Recall@100=0.102734
+test Recall@20=0.032375, Recall@50=0.046746, Recall@100=0.061782
+valid median rank=10024.000000
+test median rank=16730.500000
+```
+
+ItemCF vs Two-Tower test hit overlap：
+
+```text
+both_hit=17272
+itemcf_hit_only=24218
+two_tower_hit_only=5936
+both_miss=449044
+ItemCF diagnostic Recall@50=0.083570
+Two-Tower diagnostic Recall@50=0.046746
+```
+
+诊断结论：
+
+- valid-test gap 在所有 item popularity bucket 中都存在；长尾 bucket 的绝对 Recall@50 最低，但 gap 不只集中在长尾。
+- user history length 分桶中也普遍存在 gap；valid/test 的用户历史分布相同，因此 gap 不是由用户历史长度分布差异造成。
+- ItemCF 的优势主要来自用户历史 item 的局部共现关系，`itemcf_hit_only` 的 target item popularity median 为 517。
+- Two-Tower 仍有 ItemCF miss 但自己 hit 的样本，`two_tower_hit_only=5936`。
+- rank sanity check 与已有 full eval 指标一致，本次未发现新的 evaluation bug 迹象。
+- 当前更像是 ID-only 表达能力不足叠加 test target 更长尾、用户兴趣随时间漂移，而不是单纯训练轮数不足。
+- issue 仍保持 Open，不建议直接进入 20/25/30 epoch full training。
+
+本次运行期间出现一次 PyTorch warning：
+
+```text
+/workspace/amazon-two-tower/scripts/diagnose_clean_two_tower_gap.py:188: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  user_tensor = torch.as_tensor(batch["user_idx"].to_numpy(dtype=np.int64), device=device)
+```
+
+处理结果：脚本已改为 `to_numpy(dtype=np.int64, copy=True)` 并通过 `py_compile`；未重新跑完整诊断。

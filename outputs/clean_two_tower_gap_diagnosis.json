@@ -1,0 +1,208 @@
+{
+  "conclusions": [
+    "valid-test gap 在所有 item popularity bucket 中都存在；`<=5` bucket 从 0.030506 降到 0.017206，`>500` bucket 从 0.103644 降到 0.056632。",
+    "test target 比 valid target 更偏长尾，且长尾 bucket 的绝对 Recall@50 最低；这说明长尾 item 是重要因素，但不是唯一因素。",
+    "user history length 分桶中也普遍存在 valid-test gap，`3-5` bucket test Recall@50=0.053495，`>50` bucket test Recall@50=0.022680。",
+    "ItemCF hit only 样本数 24218，其 target item popularity median=517.000000；ItemCF 的优势主要来自能够利用用户历史 item 的局部共现关系。",
+    "Two-Tower hit only 样本数 5936，说明 Two-Tower 仍有 ItemCF miss 但自己 hit 的样本，该组 target item popularity median=67.000000。",
+    "rank sanity check 与已有 full eval 指标一致：valid Recall@50=0.081591，test Recall@50=0.046746；本次未发现新的 evaluation bug 迹象。",
+    "当前更像是 ID-only 表达能力不足叠加 test target 更长尾、用户兴趣随时间漂移，而不是单纯训练轮数不足。",
+    "在解释清楚 gap 前，仍不建议直接启动 20/25/30 epoch 长训。"
+  ],
+  "inputs": {
+    "checkpoint": "outputs/two_tower_movies_tv_5core_clean_overnight/checkpoints/best_model.pt",
+    "data_dir": "data/processed/movies_tv_5core",
+    "itemcf_config": "configs/itemcf_movies_tv_5core_clean.yaml",
+    "itemcf_existing_recall@50": 0.08357000422986283,
+    "itemcf_metrics_path": "outputs/itemcf_movies_tv_5core_clean/metrics.json",
+    "two_tower_config": "configs/two_tower_movies_tv_5core_clean_overnight.yaml"
+  },
+  "itemcf_two_tower_hit_overlap": {
+    "both_hit": {
+      "item_popularity_mean": 571.6035201482167,
+      "item_popularity_median": 110.0,
+      "long_tail_ratio_popularity_le_20": 0.13877952755905512,
+      "num_users": 17272,
+      "user_history_length_mean": 6.150358962482631,
+      "user_history_length_median": 4.0
+    },
+    "both_miss": {
+      "item_popularity_mean": 319.4943168152787,
+      "item_popularity_median": 67.0,
+      "long_tail_ratio_popularity_le_20": 0.256785526585368,
+      "num_users": 449044,
+      "user_history_length_mean": 8.791944664665378,
+      "user_history_length_median": 5.0
+    },
+    "itemcf_hit_only": {
+      "item_popularity_mean": 1905.9137831365101,
+      "item_popularity_median": 517.0,
+      "long_tail_ratio_popularity_le_20": 0.1318440829135354,
+      "num_users": 24218,
+      "user_history_length_mean": 8.277603435461227,
+      "user_history_length_median": 5.0
+    },
+    "itemcf_recall@50_diagnostic": 0.08357000422986283,
+    "two_tower_hit_only": {
+      "item_popularity_mean": 169.92099056603774,
+      "item_popularity_median": 67.0,
+      "long_tail_ratio_popularity_le_20": 0.20451482479784366,
+      "num_users": 5936,
+      "user_history_length_mean": 8.96799191374663,
+      "user_history_length_median": 5.0
+    },
+    "two_tower_recall@50_diagnostic": 0.0467460269502689
+  },
+  "notes": {
+    "itemcf_topk_existing_outputs": "clean ItemCF outputs do not contain per-user topK or hit details; this script recomputes top50 hit flags in memory for diagnosis only.",
+    "two_tower_rank_storage": "per-user ranks are computed in memory and summarized; full per-user rank tables are not written to avoid large output files."
+  },
+  "two_tower_item_popularity_bucket_recall": {
+    "test": {
+      "101-500": {
+        "hit50": 7097,
+        "num_users": 137364,
+        "recall@50": 0.05166564747677703
+      },
+      "11-20": {
+        "hit50": 1970,
+        "num_users": 50055,
+        "recall@50": 0.03935670762161622
+      },
+      "21-100": {
+        "hit50": 8237,
+        "num_users": 161718,
+        "recall@50": 0.0509343424974338
+      },
+      "6-10": {
+        "hit50": 1038,
+        "num_users": 37012,
+        "recall@50": 0.028044958391872907
+      },
+      "<=5": {
+        "hit50": 603,
+        "num_users": 35045,
+        "recall@50": 0.017206448851476673
+      },
+      ">500": {
+        "hit50": 4263,
+        "num_users": 75276,
+        "recall@50": 0.05663159572772198
+      }
+    },
+    "valid": {
+      "101-500": {
+        "hit50": 12799,
+        "num_users": 142872,
+        "recall@50": 0.08958368329693712
+      },
+      "11-20": {
+        "hit50": 2967,
+        "num_users": 46476,
+        "recall@50": 0.06383940098115157
+      },
+      "21-100": {
+        "hit50": 13486,
+        "num_users": 161631,
+        "recall@50": 0.08343696444370201
+      },
+      "6-10": {
+        "hit50": 1578,
+        "num_users": 33199,
+        "recall@50": 0.0475315521551854
+      },
+      "<=5": {
+        "hit50": 824,
+        "num_users": 27011,
+        "recall@50": 0.030506090111436082
+      },
+      ">500": {
+        "hit50": 8908,
+        "num_users": 85948,
+        "recall@50": 0.10364406385256202
+      }
+    }
+  },
+  "two_tower_rank_distribution": {
+    "test": {
+      "mean_rank": 33401.65398714927,
+      "median_rank": 16730.5,
+      "num_users": 496470,
+      "p75": 52841.0,
+      "p90": 96866.0,
+      "p95": 119408.0,
+      "p99": 144547.31,
+      "recall@100": 0.061782182206377025,
+      "recall@20": 0.03237456442483937,
+      "recall@50": 0.0467460269502689
+    },
+    "valid": {
+      "mean_rank": 26556.889010473973,
+      "median_rank": 10024.0,
+      "num_users": 497137,
+      "p75": 39281.0,
+      "p90": 82481.40000000002,
+      "p95": 108284.0,
+      "p99": 140531.92000000004,
+      "recall@100": 0.1027342563518708,
+      "recall@20": 0.059959327107014765,
+      "recall@50": 0.08159119116058551
+    }
+  },
+  "two_tower_user_history_bucket_recall": {
+    "test": {
+      "11-20": {
+        "hit50": 2105,
+        "num_users": 61857,
+        "recall@50": 0.034030101686147084
+      },
+      "21-50": {
+        "hit50": 766,
+        "num_users": 26696,
+        "recall@50": 0.028693437219059034
+      },
+      "3-5": {
+        "hit50": 14528,
+        "num_users": 271578,
+        "recall@50": 0.05349476025303964
+      },
+      "6-10": {
+        "hit50": 5656,
+        "num_users": 129593,
+        "recall@50": 0.04364433264142353
+      },
+      ">50": {
+        "hit50": 153,
+        "num_users": 6746,
+        "recall@50": 0.022680106729914024
+      }
+    },
+    "valid": {
+      "11-20": {
+        "hit50": 3315,
+        "num_users": 61970,
+        "recall@50": 0.05349362594803937
+      },
+      "21-50": {
+        "hit50": 1062,
+        "num_users": 26746,
+        "recall@50": 0.03970687205563449
+      },
+      "3-5": {
+        "hit50": 26390,
+        "num_users": 271910,
+        "recall@50": 0.09705417233643485
+      },
+      "6-10": {
+        "hit50": 9621,
+        "num_users": 129755,
+        "recall@50": 0.07414743169820046
+      },
+      ">50": {
+        "hit50": 174,
+        "num_users": 6756,
+        "recall@50": 0.02575488454706927
+      }
+    }
+  }
+}
