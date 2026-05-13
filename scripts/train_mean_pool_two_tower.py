@@ -78,6 +78,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="训练用户历史 mean pooling Two-Tower baseline。")
     parser.add_argument("--config", required=True, help="YAML 配置文件路径。")
     parser.add_argument("--smoke_test", action="store_true", help="运行 smoke test。")
+    parser.add_argument("--eval_only", action="store_true", help="只从 checkpoint 运行 valid/test eval，不训练。")
+    parser.add_argument("--checkpoint", help="eval-only 使用的 checkpoint 路径。")
+    parser.add_argument("--eval_output_dir", help="eval-only 指标输出目录。")
+    parser.add_argument("--full_eval", action="store_true", help="eval-only 时使用全部 non-cold valid/test users。")
     return parser.parse_args()
 
 
@@ -673,6 +677,171 @@ def write_report(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_full_eval_report(
+    path: Path,
+    config: dict[str, Any],
+    checkpoint_path: Path,
+    valid_metrics: dict[str, Any],
+    test_metrics: dict[str, Any],
+) -> None:
+    id_valid = {
+        "recall@50": 0.09214361433568614,
+        "ndcg@50": 0.039984435523071675,
+        "mrr@50": 0.02665389295939516,
+    }
+    id_test = {
+        "recall@50": 0.05319757487864322,
+        "ndcg@50": 0.021494396747563677,
+        "mrr@50": 0.013541905091225163,
+    }
+    lines = [
+        "# Mean Pooling Two-Tower Full Valid/Test Evaluation",
+        "",
+        "## Scope",
+        "",
+        "- Eval-only run from the saved mean pooling 20epoch best checkpoint.",
+        "- No training, no hyperparameter tuning, no model structure changes.",
+        "- Full valid/test means all non-cold eval users; this is offline evaluation, not online performance.",
+        "",
+        "## Inputs",
+        "",
+        f"- Config: `{config.get('config_path', '')}`",
+        f"- Checkpoint: `{checkpoint_path}`",
+        f"- Data: `{config['data_dir']}`",
+        f"- history_max_len: {config['history_max_len']}",
+        f"- history_weight: {config['history_weight']}",
+        f"- temperature: {config['temperature']}",
+        "",
+        "## Metrics",
+        "",
+        "| Model | Split | Eval users | Skipped cold users | Recall@20 | Recall@50 | Recall@100 | NDCG@50 | MRR@50 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        (
+            f"| Mean Pooling Two-Tower | full valid | {valid_metrics['num_eval_users']} | "
+            f"{valid_metrics['num_skipped_cold_users']} | {valid_metrics['recall@20']:.6f} | "
+            f"{valid_metrics['recall@50']:.6f} | {valid_metrics['recall@100']:.6f} | "
+            f"{valid_metrics['ndcg@50']:.6f} | {valid_metrics['mrr@50']:.6f} |"
+        ),
+        (
+            f"| Mean Pooling Two-Tower | full test | {test_metrics['num_eval_users']} | "
+            f"{test_metrics['num_skipped_cold_users']} | {test_metrics['recall@20']:.6f} | "
+            f"{test_metrics['recall@50']:.6f} | {test_metrics['recall@100']:.6f} | "
+            f"{test_metrics['ndcg@50']:.6f} | {test_metrics['mrr@50']:.6f} |"
+        ),
+        "",
+        "## ID-only 20epoch Full Eval Baseline",
+        "",
+        "| Model | Split | Recall@50 | NDCG@50 | MRR@50 |",
+        "| --- | --- | ---: | ---: | ---: |",
+        f"| ID-only Two-Tower | full valid | {id_valid['recall@50']:.6f} | {id_valid['ndcg@50']:.6f} | {id_valid['mrr@50']:.6f} |",
+        f"| ID-only Two-Tower | full test | {id_test['recall@50']:.6f} | {id_test['ndcg@50']:.6f} | {id_test['mrr@50']:.6f} |",
+        "",
+        "## Comparison",
+        "",
+        (
+            f"- Full valid Recall@50 delta vs ID-only: "
+            f"{valid_metrics['recall@50'] - id_valid['recall@50']:+.6f}"
+        ),
+        (
+            f"- Full test Recall@50 delta vs ID-only: "
+            f"{test_metrics['recall@50'] - id_test['recall@50']:+.6f}"
+        ),
+        "",
+        "## Notes",
+        "",
+        "- Valid history uses train split only.",
+        "- Test history uses train + valid split.",
+        "- Seen training items are masked during valid retrieval; seen train + valid items are masked during test retrieval.",
+        "- These metrics are offline full valid/test evaluation results only.",
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def eval_only(config: dict[str, Any], checkpoint_path: Path, eval_output_dir: Path, full_eval: bool) -> dict[str, Any]:
+    require_config(config)
+    set_seed(int(config["seed"]))
+    if full_eval:
+        config["eval_max_users"] = None
+    eval_output_dir.mkdir(parents=True, exist_ok=True)
+    write_json(eval_output_dir / "run_config.json", config)
+
+    device = resolve_device(str(config["device"]))
+    logging.info("eval-only device=%s", device)
+    logging.info("加载 checkpoint：%s", checkpoint_path)
+    bundle = load_data(Path(config["data_dir"]))
+    num_users = int(bundle.stats["n_users"])
+    num_items = int(bundle.stats["n_items"])
+    history_max_len = int(config["history_max_len"])
+
+    train_history_matrix, train_history_lengths = build_history_matrix(bundle.train_df, num_users, history_max_len)
+    logging.info(
+        "valid history matrix 完成：train_non_empty_users=%s train_avg_len=%.4f max_len=%s",
+        int((train_history_lengths > 0).sum()),
+        float(train_history_lengths.mean()),
+        history_max_len,
+    )
+    test_history_frame = pd.concat([bundle.train_df, bundle.valid_df[TRAIN_COLUMNS]], ignore_index=True)
+    test_history_matrix, test_history_lengths = build_history_matrix(test_history_frame, num_users, history_max_len)
+    logging.info(
+        "test history matrix 完成：train_valid_non_empty_users=%s train_valid_avg_len=%.4f max_len=%s",
+        int((test_history_lengths > 0).sum()),
+        float(test_history_lengths.mean()),
+        history_max_len,
+    )
+
+    train_seen = build_seen_items(bundle.train_df)
+    test_seen = merge_seen_items(train_seen, bundle.valid_df)
+    model = MeanPoolTwoTower(
+        num_users=num_users,
+        num_items=num_items,
+        embedding_dim=int(config["embedding_dim"]),
+        use_l2_norm=bool(config["use_l2_norm"]),
+        history_weight=float(config["history_weight"]),
+    ).to(device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    logging.info(
+        "checkpoint loaded：epoch=%s %s=%.6f",
+        checkpoint.get("epoch"),
+        checkpoint.get("best_metric_name", "best_metric"),
+        float(checkpoint.get("best_metric_value", 0.0)),
+    )
+
+    valid_metrics = evaluate_with_oom_retry(
+        model,
+        bundle.valid_df,
+        train_history_matrix,
+        train_seen,
+        config,
+        bundle.stats,
+        device,
+        split_name="valid_full",
+    )
+    write_json(eval_output_dir / "metrics_valid_full.json", valid_metrics)
+
+    test_metrics = evaluate_with_oom_retry(
+        model,
+        bundle.test_df,
+        test_history_matrix,
+        test_seen,
+        config,
+        bundle.stats,
+        device,
+        split_name="test_full",
+    )
+    write_json(eval_output_dir / "metrics_test_full.json", test_metrics)
+    write_full_eval_report(eval_output_dir / "full_eval_report.md", config, checkpoint_path, valid_metrics, test_metrics)
+
+    summary = {
+        "checkpoint": str(checkpoint_path),
+        "output_dir": str(eval_output_dir),
+        "valid_recall@50": valid_metrics["recall@50"],
+        "test_recall@50": test_metrics["recall@50"],
+    }
+    logging.info("mean pooling full eval 完成：%s", json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return summary
+
+
 def train(config: dict[str, Any]) -> dict[str, Any]:
     require_config(config)
     set_seed(int(config["seed"]))
@@ -811,7 +980,17 @@ def main() -> None:
     setup_logging()
     args = parse_args()
     config = load_config(Path(args.config))
-    train(apply_smoke_overrides(config, args.smoke_test))
+    config["config_path"] = args.config
+    if args.eval_only:
+        if args.smoke_test:
+            raise ValueError("eval-only 不支持 smoke_test。")
+        if not args.checkpoint:
+            raise ValueError("eval-only 必须提供 --checkpoint。")
+        if not args.eval_output_dir:
+            raise ValueError("eval-only 必须提供 --eval_output_dir。")
+        eval_only(config, Path(args.checkpoint), Path(args.eval_output_dir), args.full_eval)
+    else:
+        train(apply_smoke_overrides(config, args.smoke_test))
 
 
 if __name__ == "__main__":

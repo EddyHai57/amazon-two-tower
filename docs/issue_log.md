@@ -1474,3 +1474,111 @@ epoch 20 = 0.094820
 
 - 若继续，应只跑 mean pooling 20epoch full valid/test，不扩展到新结构或调参。
 - 不要把 limited valid 结果写成 full eval、线上效果或超过 ItemCF 的结论。
+
+## 2026-05-13 - Mean pooling 20epoch full valid/test eval 完成
+
+- 严重程度：Low
+- 状态：Resolved
+- 日期：2026-05-13
+
+### 现象
+
+Mean pooling 20epoch limited valid best checkpoint 为：
+
+```text
+checkpoint = outputs/user_mean_pool_20ep/checkpoints/best_model.pt
+best_epoch = 6
+limited valid best Recall@50 = 0.096580
+```
+
+本轮需要验证该 checkpoint 在 full valid/test offline evaluation 上是否仍然优于 ID-only 20epoch full eval baseline。
+
+### 影响范围
+
+- 只运行 eval-only full valid/test。
+- 未继续训练。
+- 未修改模型结构。
+- 未调参。
+- 未运行 Faiss、text-enhanced、Transformer、LogQ、负采样或 hybrid retrieval。
+
+### 已尝试的排查步骤
+
+为避免误触发训练，`scripts/train_mean_pool_two_tower.py` 增加了最小 eval-only 参数：
+
+```text
+--eval_only
+--checkpoint
+--eval_output_dir
+--full_eval
+```
+
+执行：
+
+```text
+python scripts/train_mean_pool_two_tower.py \
+  --config configs/two_tower_movies_tv_5core_mean_pool_20epoch.yaml \
+  --eval_only \
+  --full_eval \
+  --checkpoint outputs/user_mean_pool_20ep/checkpoints/best_model.pt \
+  --eval_output_dir outputs/user_mean_pool_20ep_full_eval
+```
+
+输出目录：
+
+```text
+outputs/user_mean_pool_20ep_full_eval/
+```
+
+日志：
+
+```text
+logs/user_mean_pool_20ep_full_eval.log
+```
+
+### 结果
+
+Full valid：
+
+```text
+num_eval_users = 497137
+num_skipped_cold_users = 312
+Recall@20 = 0.069880
+Recall@50 = 0.096309
+Recall@100 = 0.122059
+NDCG@50 = 0.041919
+MRR@50 = 0.028022
+```
+
+Full test：
+
+```text
+num_eval_users = 496470
+num_skipped_cold_users = 979
+Recall@20 = 0.042462
+Recall@50 = 0.061601
+Recall@100 = 0.081028
+NDCG@50 = 0.025176
+MRR@50 = 0.016047
+```
+
+对比 ID-only 20epoch full eval：
+
+```text
+full valid Recall@50: 0.096309 vs 0.092144, absolute improvement +0.004166, relative improvement +4.52%
+full valid NDCG@50:  0.041919 vs 0.039984, delta +0.001934
+full valid MRR@50:   0.028022 vs 0.026654, delta +0.001368
+full test Recall@50: 0.061601 vs 0.053198, absolute improvement +0.008403, relative improvement +15.80%
+full test NDCG@50:  0.025176 vs 0.021494, delta +0.003681
+full test MRR@50:   0.016047 vs 0.013542, delta +0.002505
+```
+
+### 客观判断
+
+- Mean pooling 20epoch checkpoint 在 full valid/test offline eval 上保持了相对 ID-only 20epoch full baseline 的提升。
+- 该结果支持把 `user_id embedding + historical item mean pooling` 记录为一个有效的用户塔轻量增强候选。
+- 不能把该结果写成线上效果、超过 ItemCF 或最终模型一定更强。
+
+### 后续复用建议
+
+- 可以将 full valid/test 结果用于 5/15 简历中的 offline evaluation 对比。
+- 若后续继续扩展，应先由 Eddy 明确批准实验边界。
