@@ -1300,3 +1300,83 @@ PY
 ### 后续复用建议
 
 - 若从 repo root 直接 import `scripts/` 下的单文件脚本，应设置 `PYTHONPATH=scripts`，或优先通过脚本命令行入口执行。
+
+## 2026-05-13 - Mean pooling 5epoch limited eval 完成，作为 ID-only 表达能力问题的用户塔增强对照
+
+- 严重程度：Low
+- 状态：Resolved
+- 日期：2026-05-13
+
+### 现象
+
+此前 ID-only Two-Tower 5epoch limited valid baseline 为：
+
+```text
+Recall@50 = 0.0812
+```
+
+为验证轻量用户塔升级是否能改善 ID-only 表达能力，本轮运行 `user_id embedding + historical item mean pooling` 的 5epoch limited valid eval。
+
+### 影响范围
+
+- 只影响 mean pooling controlled experiment 记录。
+- 未修改 processed data。
+- 未运行 full valid/test。
+- 未运行 20epoch。
+- 未运行 text-enhanced、Faiss 新实验、Transformer、LogQ、负采样或 hybrid retrieval。
+
+### 已尝试的排查步骤
+
+使用配置：
+
+```text
+configs/two_tower_movies_tv_5core_mean_pool_5epoch.yaml
+```
+
+输出目录：
+
+```text
+outputs/user_mean_pool_5ep/
+```
+
+日志：
+
+```text
+logs/user_mean_pool_5ep.log
+```
+
+### 结果
+
+```text
+eval setting = limited valid, eval_max_users=50000
+best_epoch = 4
+best Recall@50 = 0.095680
+Recall@20 = 0.069580
+Recall@100 = 0.122080
+NDCG@50 = 0.041792
+MRR@50 = 0.028037
+```
+
+每轮 Recall@50：
+
+```text
+epoch 1 = 0.085020
+epoch 2 = 0.093880
+epoch 3 = 0.095340
+epoch 4 = 0.095680
+epoch 5 = 0.095320
+```
+
+### 客观判断
+
+- Mean pooling 5epoch limited valid `Recall@50=0.095680` 高于 ID-only 5epoch limited valid `Recall@50=0.0812`。
+- train_loss 正常下降。
+- best epoch 出现在 epoch 4，epoch 5 略有回落。
+- NDCG@50 / MRR@50 相比 ID-only 5epoch baseline 同步改善。
+- 该结果支持把 mean pooling 作为用户塔轻量增强候选，但仍不是 full valid/test 结论。
+
+### 后续复用建议
+
+- 可以建议进入 20epoch，但只在 Eddy 明确批准后执行。
+- 若进入 20epoch，继续保持 limited-valid 监控，不提前运行 full test。
+- 不要把本结果写成超过 ItemCF、线上效果提升或最终收敛模型。
