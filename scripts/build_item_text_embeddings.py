@@ -130,6 +130,7 @@ def main():
     encode_indices = list(range(min(limit, num_items_total)))
 
     texts: list[str] = []
+    has_text_mask = np.zeros(num_items_total, dtype=bool)
     preview_info: list[dict] = []
     num_missing_metadata = 0
     num_empty_text_fallback = 0
@@ -157,6 +158,7 @@ def main():
             num_empty_text_fallback += 1
 
         texts.append(text)
+        has_text_mask[item_idx] = not is_fallback
         if item_idx < 3:
             meta_row = asin_to_row.get(asin, {})
             preview_info.append(
@@ -221,9 +223,11 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     npy_path = os.path.join(args.output_dir, "item_text_embedding.npy")
+    has_text_path = os.path.join(args.output_dir, "item_has_text.npy")
     meta_path = os.path.join(args.output_dir, "item_text_meta.json")
 
     np.save(npy_path, output_array)
+    np.save(has_text_path, has_text_mask)
 
     meta = {
         "dataset_name": args.dataset_name,
@@ -245,12 +249,14 @@ def main():
         "created_at": datetime.utcnow().isoformat() + "Z",
         "script_version": args.script_version,
         "output_npy": npy_path,
+        "output_has_text_npy": has_text_path,
         "dtype": "float32",
     }
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
 
     print(f"      npy:  {npy_path}  shape={output_array.shape}  dtype={output_array.dtype}")
+    print(f"      has_text: {has_text_path}  true={int(has_text_mask.sum())}/{len(has_text_mask)}")
     print(f"      meta: {meta_path}")
 
     # --- Preview ---

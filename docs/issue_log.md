@@ -1582,3 +1582,81 @@ full test MRR@50:   0.016047 vs 0.013542, delta +0.002505
 
 - 可以将 full valid/test 结果用于 5/15 简历中的 offline evaluation 对比。
 - 若后续继续扩展，应先由 Eddy 明确批准实验边界。
+
+## 2026-05-13 - Text + Mean Pooling combination experiment completed
+
+- 严重程度：Low
+- 状态：Resolved
+- 日期：2026-05-13
+
+### 现象
+
+最终组合实验需要复用 text-enhanced item tower 与 mean-pooling user tower，但新服务器缺少历史 text embedding cache。
+
+### 影响范围
+
+- 若没有 `item_text_embedding.npy` 与 `item_has_text.npy`，组合模型无法按既有 text-enhanced 逻辑运行。
+- 本轮没有改动已有 ID-only、text-enhanced、mean-pooling baseline 结果。
+- 未运行 Faiss、Transformer、attention、LogQ、负采样或 hybrid retrieval。
+
+### 处理
+
+- 按既有 text embedding 规则重新生成 cache：
+
+```text
+outputs/item_text_embeddings/movies_tv_5core/item_text_embedding.npy
+outputs/item_text_embeddings/movies_tv_5core/item_has_text.npy
+```
+
+- 生成结果：
+
+```text
+embedding shape = (153977, 384)
+has_text = 95016 / 153977
+fallback = 58961
+```
+
+- 新增独立组合脚本与配置：
+
+```text
+scripts/train_text_mean_pool_two_tower.py
+configs/two_tower_movies_tv_5core_text_mean_pool_smoke.yaml
+configs/two_tower_movies_tv_5core_text_mean_pool_5epoch.yaml
+configs/two_tower_movies_tv_5core_text_mean_pool_20epoch.yaml
+```
+
+### 结果
+
+Limited valid 50K：
+
+```text
+5epoch best epoch = 3
+5epoch best Recall@50 = 0.099020
+20epoch best epoch = 3
+20epoch best Recall@50 = 0.099020
+```
+
+Full valid/test：
+
+```text
+full valid Recall@50 = 0.099628
+full valid NDCG@50 = 0.042867
+full valid MRR@50 = 0.028419
+
+full test Recall@50 = 0.066042
+full test NDCG@50 = 0.026751
+full test MRR@50 = 0.016922
+```
+
+对比 Mean Pooling 20epoch full eval：
+
+```text
+full valid Recall@50: 0.099628 vs 0.096309, absolute delta +0.003319
+full test Recall@50:  0.066042 vs 0.061601, absolute delta +0.004441
+```
+
+### 客观判断
+
+- 组合模型在当前 offline full valid/test evaluation 中高于 mean pooling 单独模型。
+- 该结果说明 text item signal 在 mean pooling user tower 基础上仍有边际收益。
+- 不能把该结果写成线上效果、超过 ItemCF 或最终架构一定最优。
