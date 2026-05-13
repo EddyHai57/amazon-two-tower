@@ -1380,3 +1380,97 @@ epoch 5 = 0.095320
 - 可以建议进入 20epoch，但只在 Eddy 明确批准后执行。
 - 若进入 20epoch，继续保持 limited-valid 监控，不提前运行 full test。
 - 不要把本结果写成超过 ItemCF、线上效果提升或最终收敛模型。
+
+## 2026-05-13 - Mean pooling 20epoch limited eval 完成，full valid/test 暂缓
+
+- 严重程度：Low
+- 状态：Resolved
+- 日期：2026-05-13
+
+### 现象
+
+Mean pooling 5epoch limited valid 已高于 ID-only 5epoch baseline：
+
+```text
+ID-only 5epoch limited valid Recall@50 = 0.0812
+Mean pooling 5epoch limited valid Recall@50 = 0.095680
+```
+
+本轮按同一受控口径继续运行 mean pooling 20epoch limited valid eval，用于判断是否值得后续进入 full valid/test。
+
+### 影响范围
+
+- 只影响 mean pooling controlled experiment 记录。
+- 未修改 processed data。
+- 未运行 full valid/test。
+- 未运行 text-enhanced、Transformer、LogQ、负采样、Faiss sweep 或 hybrid retrieval。
+- 未修改 ID-only baseline checkpoint 或结果。
+
+### 已尝试的排查步骤
+
+使用配置：
+
+```text
+configs/two_tower_movies_tv_5core_mean_pool_20epoch.yaml
+```
+
+输出目录：
+
+```text
+outputs/user_mean_pool_20ep/
+```
+
+日志：
+
+```text
+logs/user_mean_pool_20ep.log
+```
+
+### 结果
+
+```text
+eval setting = limited valid, eval_max_users=50000
+best_epoch = 6
+best Recall@50 = 0.096580
+Recall@20 = 0.069780
+Recall@100 = 0.122120
+NDCG@50 = 0.042543
+MRR@50 = 0.028778
+```
+
+每轮 Recall@50：
+
+```text
+epoch 1 = 0.085020
+epoch 2 = 0.093880
+epoch 3 = 0.095340
+epoch 4 = 0.095680
+epoch 5 = 0.095320
+epoch 6 = 0.096580
+epoch 7 = 0.094740
+epoch 8 = 0.095640
+epoch 9 = 0.095600
+epoch 10 = 0.096000
+epoch 11 = 0.095380
+epoch 12 = 0.095920
+epoch 13 = 0.096180
+epoch 14 = 0.095120
+epoch 15 = 0.095380
+epoch 16 = 0.095040
+epoch 17 = 0.094900
+epoch 18 = 0.095540
+epoch 19 = 0.095100
+epoch 20 = 0.094820
+```
+
+### 客观判断
+
+- Mean pooling 20epoch limited valid `Recall@50=0.096580` 略高于 mean pooling 5epoch limited valid `Recall@50=0.095680`。
+- 该结果高于 ID-only 5epoch limited valid `Recall@50=0.0812`。
+- best epoch 出现在 epoch 6，后续 Recall@50 在相近区间波动；不能据此声称最终收敛或线上提升。
+- 可以建议 5/14 运行 full valid/test，但只在 Eddy 明确批准后执行。
+
+### 后续复用建议
+
+- 若继续，应只跑 mean pooling 20epoch full valid/test，不扩展到新结构或调参。
+- 不要把 limited valid 结果写成 full eval、线上效果或超过 ItemCF 的结论。
