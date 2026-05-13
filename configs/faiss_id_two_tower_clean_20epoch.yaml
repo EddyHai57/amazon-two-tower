@@ -1,0 +1,18 @@
+train_config: configs/two_tower_movies_tv_5core_clean_20epoch.yaml
+data_dir: data/processed/movies_tv_5core
+checkpoint: outputs/two_tower_movies_tv_5core_clean_20epoch/checkpoints/best_model.pt
+output_dir: outputs/faiss_id_two_tower_clean_20epoch
+device: cuda
+top_k: 50
+sample_users_per_split: 2000
+sample_seed: 42
+embedding_batch_size: 8192
+faiss_num_threads: 8
+ivf_nlist: 1024
+ivf_nprobe: 32
+ivf_nprobe_sweep: [1, 4, 8, 16, 32]
+ivf_train_sample_size: 153977
+warmup_queries: 20
+eval_splits:
+  - valid
+  - test

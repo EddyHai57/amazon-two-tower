@@ -1,0 +1,18 @@
+data_dir: data/processed/movies_tv_5core
+output_dir: outputs/two_tower_movies_tv_5core_mean_pool_1epoch
+embedding_dim: 64
+batch_size: 4096
+learning_rate: 0.001
+weight_decay: 0.000001
+epochs: 1
+temperature: 0.07
+use_l2_norm: true
+seed: 42
+eval_k_list: [20, 50, 100]
+eval_batch_size: 256
+eval_max_users: 10000
+num_workers: 0
+device: cuda
+save_best_by: valid_recall@50
+history_max_len: 50
+history_weight: 1.0

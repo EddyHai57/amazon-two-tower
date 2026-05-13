@@ -1058,3 +1058,245 @@ outputs/text_two_tower_additive_movies_tv_5core_20epoch/
 - 简历叙事应重点描述 popularity bucket 结构性差异，而非整体 Recall 数字。
 - 当前最强叙事：ItemCF 依赖局部共现（热门 item 强）；Two-Tower 依赖全局 embedding（中等热度 item 有泛化优势）；text-enhanced 在有真实元数据的 item 上有实质增益。
 - 推迟 hybrid retrieval 和进一步架构调参至 5/15 之后。
+
+---
+
+## 2026-05-13 - 新服务器缺少项目环境与大产物，需要重建 preprocess 链路
+
+- 严重程度：High
+- 状态：Partially Resolved（项目 `.venv` 和 clean 5-core processed data 已恢复；checkpoints / embeddings 仍缺失）
+- 日期：2026-05-13
+
+### 现象
+
+新服务器接管检查确认：
+
+```text
+无 data/processed/
+无 checkpoints
+无 item_text_embedding.npy
+无旧 HuggingFace cache
+无项目 .venv
+/venv/main/bin/python 存在，且系统环境中有 PyTorch/CUDA
+```
+
+### 影响
+
+- 不能直接继续 Faiss benchmark。
+- 不能直接导出 item tower embeddings 或 eval user embeddings。
+- 不能直接复用历史 ID-only / text-enhanced checkpoint。
+- 必须先恢复数据链路，至少重新生成 Movies_and_TV clean 5-core processed dataset。
+
+### 已执行恢复步骤
+
+按项目既有原则，在项目目录内重建 `.venv`，并复用系统 PyTorch/CUDA：
+
+```bash
+/venv/main/bin/python -m venv .venv --system-site-packages
+```
+
+安装 preprocess 最小依赖：
+
+```bash
+.venv/bin/python -m pip install 'datasets==2.17.0' 'huggingface_hub==0.36.2' pyyaml pandas pyarrow
+```
+
+验证结果：
+
+```text
+Python = 3.12.13
+datasets = 2.17.0
+huggingface_hub = 0.36.2
+pandas = 3.0.3
+pyarrow = 24.0.0
+PyYAML = 6.0.3
+torch = 2.11.0+cu128
+torch file = /venv/main/lib/python3.12/site-packages/torch/__init__.py
+cuda_available = True
+GPU = NVIDIA GeForce RTX 3090
+```
+
+重新下载 / 加载 Amazon Reviews 2023 Movies_and_TV，并运行 clean 5-core preprocess：
+
+```bash
+HF_HOME=/workspace/.hf_home HF_DATASETS_CACHE=/workspace/.hf_home/datasets \
+  .venv/bin/python scripts/preprocess_amazon.py \
+  --config configs/preprocess_movies_tv_5core.yaml
+```
+
+### 恢复结果
+
+preprocess 成功完成，输出目录：
+
+```text
+data/processed/movies_tv_5core/
+```
+
+已生成：
+
+```text
+README.md
+id2item.json
+id2user.json
+item2id.json
+stats.json
+test.parquet
+train.parquet
+user2id.json
+valid.parquet
+```
+
+核心规模：
+
+```text
+n_interactions_before_dedup = 17328314
+n_interactions_after_dedup  = 17158519
+dedup_removed_interactions  = 169795
+n_users                     = 497449
+n_items                     = 153977
+n_interactions_total        = 5314336
+n_interactions_train        = 4319438
+n_interactions_valid        = 497449
+n_interactions_test         = 497449
+n_cold_items_in_valid       = 312
+n_cold_items_in_test        = 979
+cold_item_ratio_valid       = 0.000627199974268719
+cold_item_ratio_test        = 0.0019680409449008844
+```
+
+split schema / row count 已验证：
+
+```text
+train.parquet rows = 4319438
+valid.parquet rows = 497449, cold = 312
+test.parquet  rows = 497449, cold = 979
+user_idx range = 0..497448
+item_idx range = 0..153976
+```
+
+### 当前未恢复部分
+
+仍缺少：
+
+```text
+outputs/two_tower_movies_tv_5core_clean_20epoch/checkpoints/best_model.pt
+outputs/text_two_tower_additive_movies_tv_5core_20epoch/checkpoints/best_model.pt
+outputs/item_text_embeddings/movies_tv_5core/item_text_embedding.npy
+导出的 item tower embeddings
+导出的 eval user embeddings
+ID-only / text-enhanced full eval outputs
+```
+
+### 后续状态更新
+
+2026-05-13 后续已在新服务器重新生成 Movies_and_TV clean 5-core processed data；已重训并恢复 ID-only Two-Tower checkpoint；已完成 ID-only Faiss benchmark，并生成离线 benchmark embeddings。text-enhanced checkpoint 和 item text embeddings 仍未恢复，本阶段未处理。
+
+### 后续复用建议
+
+- 当前状态只恢复了数据链路，不应直接进入 Faiss benchmark。
+- 下一步需要先恢复或重训 checkpoint。
+- 若重训，仍应使用项目 `.venv`，不要直接切到全局 Python。
+- `data/processed/`、`.venv/`、HF cache、checkpoints、embedding 均不提交 Git。
+
+## 项目 `.venv` 初始缺少 `faiss`
+
+- 严重程度：Low
+- 状态：已解决
+- 日期：2026-05-13
+
+### 现象
+
+启动 ID-only Two-Tower Faiss benchmark 前检查依赖时，项目 `.venv` 中无法导入 `faiss`。
+
+### 报错原文或关键日志
+
+```text
+ModuleNotFoundError: No module named 'faiss'
+```
+
+### 影响
+
+- 无法直接运行 Faiss FlatIP / IVF-Flat offline retrieval benchmark。
+- 不影响已有 processed data、checkpoint 或 full eval metrics。
+
+### 初步原因判断
+
+新服务器项目 `.venv` 是按最小 preprocess / training 依赖恢复的，此前没有安装 Faiss。
+
+### 已尝试的排查步骤
+
+- 使用项目 `.venv` 执行 `import faiss` 检查，确认缺失。
+- 遵守本轮要求，只安装 CPU 版 Faiss，不安装 GPU Faiss。
+
+### 最终解决方案
+
+只在项目 `.venv` 中安装：
+
+```bash
+.venv/bin/python -m pip install faiss-cpu
+```
+
+安装后确认：
+
+```text
+faiss-cpu = 1.13.2
+Location = /workspace/amazon-two-tower/.venv/lib/python3.12/site-packages
+```
+
+### 后续复用建议
+
+- Faiss benchmark 继续使用项目 `.venv`。
+- 当前阶段优先使用 `faiss-cpu`；如后续需要 GPU Faiss，应单独评估 CUDA / PyTorch / Faiss 版本兼容性，并由 Eddy 确认后再安装。
+
+## 直接 import benchmark 脚本重写报告时缺少 `PYTHONPATH=scripts`
+
+- 严重程度：Low
+- 状态：已解决
+- 日期：2026-05-13
+
+### 现象
+
+Faiss nprobe sweep 完成后，为了只按既有 JSON 重写 markdown 报告顺序，曾用 `importlib` 直接加载 `scripts/benchmark_faiss_id_two_tower.py`。该命令没有设置 `PYTHONPATH=scripts`，导致脚本中的本地模块导入失败。
+
+### 报错原文或关键日志
+
+```text
+ERROR: 缺少依赖：train_two_tower。请先在项目 .venv 中安装 package：train_two_tower
+```
+
+### 影响
+
+- 不影响 nprobe sweep 结果。
+- 不影响 `benchmark_results.json`。
+- 只影响一次 markdown 报告重写命令。
+
+### 初步原因判断
+
+直接通过 `importlib.util.spec_from_file_location` 加载脚本时，当前 Python import path 没有包含 `scripts/`，因此无法解析同目录下的 `train_two_tower.py`。
+
+### 已尝试的排查步骤
+
+- 确认 benchmark sweep 已完成且 JSON 已写入。
+- 使用正确的 import path 重新运行只重写报告的命令。
+
+### 最终解决方案
+
+使用：
+
+```bash
+PYTHONPATH=scripts .venv/bin/python - <<'PY'
+from pathlib import Path
+import importlib.util
+spec = importlib.util.spec_from_file_location('bench', 'scripts/benchmark_faiss_id_two_tower.py')
+bench = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bench)
+result = bench.read_json(Path('outputs/faiss_id_two_tower_clean_20epoch/benchmark_results.json'))
+bench.write_report(Path('outputs/faiss_id_two_tower_clean_20epoch/benchmark_report.md'), result)
+PY
+```
+
+报告已成功重写，未重新运行 benchmark。
+
+### 后续复用建议
+
+- 若从 repo root 直接 import `scripts/` 下的单文件脚本，应设置 `PYTHONPATH=scripts`，或优先通过脚本命令行入口执行。
