@@ -2187,3 +2187,75 @@ logs/text_mean_pool_semi_hnm_smoke.log
 scripts/train_text_mean_pool_semi_hard_negative_smoke.py
 configs/two_tower_movies_tv_5core_text_mean_pool_semi_hnm_smoke.yaml
 ```
+
+## 2026-05-14 - Semi-hard HNM λ=0.01 smoke 完成（降低 lambda 无改善，HNM 系列停止）
+
+- 严重程度：Low（final exploratory experiment）
+- 状态：Completed — HNM 系列实验全部结束，归入 future work
+
+### 背景
+
+在 Semi-hard HNM λ=0.03（epoch1 Recall@50=0.108840，高于 baseline 0.107460 约 +1.28%）的基础上，验证进一步降低 lambda_hn 至 0.01 是否能减少对 main loss 的干扰，从而改善结果。
+
+### 实验配置
+
+唯一改动：`lambda_hn = 0.01`（vs 0.03）
+
+```text
+model_hn_checkpoint = outputs/text_mean_pool_tau015_20ep/checkpoints/best_model.pt
+hn_top_k_search = 300
+semi_hard_start_rank = 50
+semi_hard_end_rank = 200
+n_candidates_per_item = 150
+lambda_hn = 0.01
+hard_negatives_per_sample = 2
+temperature = 0.15
+epochs = 1
+eval_max_users = 50000
+```
+
+### 结果
+
+```text
+Recall@20  = 0.076040
+Recall@50  = 0.107840
+Recall@100 = 0.138960
+NDCG@50    = 0.045336
+MRR@50     = 0.029525
+epoch time = 401.22s（约 5.15× baseline ~78s）
+```
+
+### 五方对比（epoch1 limited Recall@50）
+
+| Model | Recall@50 | delta |
+| --- | ---: | ---: |
+| Baseline Text+MP τ=0.15 | 0.107460 | — |
+| Text-based HNM smoke | 0.107840 | +0.000380 |
+| Model-based top-50 HNM smoke | 0.105200 | -0.002260 |
+| Semi-hard HNM λ=0.03 | 0.108840 | +0.001380 |
+| **Semi-hard HNM λ=0.01** | **0.107840** | **+0.000380** |
+
+### 客观判断
+
+1. λ=0.01 结果（0.107840）**低于** λ=0.03（0.108840），降低 lambda 没有改善。
+2. 效果与 text-based HNM（0.107840）持平，说明 lambda 过小导致 HN 辅助信号过弱。
+3. 按决策规则：`0.107840 ≤ 0.108840` → 停止 HNM 系列实验。
+4. 4 种 HNM 变体均未超过 0.109000 建议阈值；最优变体（semi-hard λ=0.03）改善仅 +1.28%，epoch 开销 4.31×。
+
+### HNM 系列最终结论
+
+所有 HNM smoke 实验（text-based / model-based top-50 / semi-hard λ=0.03 / semi-hard λ=0.01）已完成。无任何变体达到 0.109000 阈值。全部归入 future work，不纳入主模型路线。
+
+当前最终主模型结论不变：Text + Mean Pooling τ=0.15，full test Recall@50=0.076337。
+
+若将来重新评估 HNM，建议方向：
+- 批量化 compute_hn_loss 降低 epoch 开销
+- 动态 HN（online mining，随训练模型更新）
+- curriculum：前若干 epoch 纯 main_loss，逐步引入 HN
+
+### 新增文件（待提交）
+
+```text
+scripts/train_text_mean_pool_semi_hard_negative_lambda001_smoke.py
+configs/two_tower_movies_tv_5core_text_mean_pool_semi_hnm_lambda001_smoke.yaml
+```
