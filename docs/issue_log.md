@@ -1857,3 +1857,48 @@ outputs/cold_start_eval/results.json
 - Text+MP τ=0.15 在 `>100` head bucket 上 Recall@50 最高，但仍低于 ItemCF。
 - 在 `<=5` 和 `6-20` low-frequency / long-tail buckets 上，Text+MP τ=0.15 相比 Mean Pooling 分别提升 `+0.006962` 和 `+0.010475` Recall@50。
 - 该结果是 offline test bucket evaluation，不代表线上效果，也不声称超过 ItemCF。
+
+---
+
+## 2026-05-13 - User history length bucket diagnostic 完成，docs 更新延迟补录
+
+- 严重程度：Low
+- 状态：Resolved
+- 日期：2026-05-13（docs 于 2026-05-14 补录）
+
+### 现象
+
+item popularity bucket evaluation 完成后，需要继续对 full test non-cold users 按 train history length 切桶，诊断 Text + Mean Pooling τ=0.15 在不同用户历史长度下的 Recall 表现。评估脚本已正常运行完成，但 docs 更新未及时写入。
+
+### 影响范围
+
+- 只做 evaluation，不重新训练，不修改模型结构，不调参。
+- 使用已有 checkpoint：`outputs/text_mean_pool_tau015_20ep/checkpoints/best_model.pt`。
+- 输出目录：`outputs/user_history_bucket_eval/`。
+- 脚本：`scripts/eval_user_history_buckets.py`（已存在，未修改）。
+- 未运行 Faiss，未做 Hard Negative Mining，未做 batch size sweep 或 temperature sweep。
+
+### 结果
+
+| user train history length | num_test_users | Recall@20 | Recall@50 | Recall@100 | NDCG@50 | MRR@50 | note |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 0 | 0 | n/a | n/a | n/a | n/a | n/a | no non-cold test users |
+| 1-2 | 0 | n/a | n/a | n/a | n/a | n/a | no non-cold test users |
+| 3-5 | 271578 | 0.061456 | 0.086826 | 0.112903 | 0.035723 | 0.022782 | evaluated |
+| 6-20 | 191450 | 0.042695 | 0.067401 | 0.094051 | 0.024778 | 0.014330 | evaluated |
+| >20 | 33442 | 0.022038 | 0.042312 | 0.066982 | 0.013229 | 0.006328 | evaluated |
+
+### 客观判断
+
+1. 这是 user history length bucket diagnostic，不是解决 true new-user cold start。
+2. 当前 processed 5-core full test non-cold users 中，train history length 0 和 1–2 桶均为空。
+3. Text+MP τ=0.15 在 3–5 history bucket 最强，Recall@50 = `0.086826`。
+4. Recall@50 不随 train history length 单调提升；长历史用户反而 Recall 更低。
+5. 可能解释：long-history 用户兴趣更复杂，简单 mean pooling 把多兴趣平均成模糊向量，降低召回准确性。
+6. 真正的新用户冷启动需要用户画像、初始兴趣、上下文特征或 popularity fallback，超出本实验范围。
+7. 该诊断只说明当前模型边界，不应夸大为解决用户冷启动问题。
+
+### 后续复用建议
+
+- 本 issue 已关闭，只做记录用。
+- 若后续要改善长历史用户召回，可考虑 attention pooling、时序建模或兴趣拆分，但需单独立项评估。
