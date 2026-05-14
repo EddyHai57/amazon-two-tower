@@ -2259,3 +2259,99 @@ epoch time = 401.22s（约 5.15× baseline ~78s）
 scripts/train_text_mean_pool_semi_hard_negative_lambda001_smoke.py
 configs/two_tower_movies_tv_5core_text_mean_pool_semi_hnm_lambda001_smoke.yaml
 ```
+
+## 2026-05-14 - Time-decay Mean Pooling smoke 完成
+
+- 严重程度：N/A（exploratory smoke）
+- 状态：完成 / 建议继续 5epoch（待用户批准）
+
+### 背景
+
+User history length bucket diagnostic 发现长历史用户 Recall@50 低于短历史用户（6–20: 0.067401，>20: 0.042312），推测 simple mean pooling 稀释多兴趣历史。尝试 time-decay weighted mean pooling：最近 item 权重 1.0，按 decay_rate=0.8 指数衰减。
+
+### 唯一改动
+
+仅将 user tower 的 `masked_mean` 改为 `masked_weighted_mean(decay_rate=0.8)`。item tower、temperature、batch_size、lr、seed 全部与 Text + Mean Pooling τ=0.15 主模型一致。无新可学习参数。
+
+### 1epoch limited valid 结果
+
+| 指标 | 值 |
+| --- | ---: |
+| Recall@20 | 0.081300 |
+| **Recall@50** | **0.114420** |
+| Recall@100 | 0.145780 |
+| NDCG@50 | 0.048829 |
+| MRR@50 | 0.032171 |
+| epoch time | 87.18s (≈1.12× baseline) |
+
+### 对比（Recall@50）
+
+| Model | epoch1 Recall@50 | delta |
+| --- | ---: | ---: |
+| Baseline Text+MP τ=0.15 | 0.107460 | — |
+| Semi-hard HNM λ=0.03（best HNM） | 0.108840 | +0.001380 |
+| **Time-decay MP (decay=0.8)** | **0.114420** | **+0.006960** |
+
+### 客观判断
+
+1. epoch1 Recall@50 = 0.114420，**超过 0.109000 阈值**，是所有 smoke 中最强信号。
+2. 计算开销极低（1.12× baseline），远低于 HNM 系列（4×）。
+3. 按决策规则：**建议进入 5epoch 实验，须等待用户批准**。
+
+### 新增文件
+
+```text
+scripts/train_text_time_decay_mean_pool_two_tower_smoke.py
+configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_smoke.yaml
+```
+
+## 2026-05-14 - Time-decay Mean Pooling 5epoch limited eval 完成
+
+- 严重程度：N/A（exploratory 5epoch eval）
+- 状态：完成 / 建议继续 20epoch + full eval（待用户批准）
+
+### 背景
+
+1epoch smoke 结果（Recall@50=0.114420）超过阈值，用户批准继续 5epoch。与 smoke 相比仅修改 `epochs: 5` 和 `output_dir`，其余参数不变。
+
+### epoch 曲线
+
+| epoch | Recall@50 |
+| ---: | ---: |
+| 1 | 0.114420 |
+| **2** | **0.119840** |
+| 3 | 0.119740 |
+| 4 | 0.119120 |
+| 5 | 0.118840 |
+
+best epoch = 2（Recall@50 = 0.119840）。epoch 2 后小幅下滑，收敛快于 simple mean pooling。
+
+### 最佳 epoch 结果（epoch 2）
+
+| 指标 | 值 |
+| --- | ---: |
+| Recall@20 | 0.085080 |
+| **Recall@50** | **0.119840** |
+| Recall@100 | 0.153540 |
+| NDCG@50 | 0.051130 |
+| MRR@50 | 0.033675 |
+
+### 对比（Recall@50）
+
+| Model | eval | Recall@50 |
+| --- | --- | ---: |
+| Simple Text+MP τ=0.15 | 5ep limited | 0.117240 |
+| Simple Text+MP τ=0.15 | 20ep limited | 0.120180 |
+| **Time-decay decay=0.8** | **5ep limited (best ep2)** | **0.119840** |
+
+### 客观判断
+
+1. 5epoch best（0.119840）**超过** simple 5epoch（0.117240），与 simple 20epoch（0.120180）差距仅 -0.000340。
+2. 按决策规则：结果在 0.117240–0.120180 区间，**建议继续 20epoch + full eval，须等待用户批准**。
+3. epoch time ~87s/epoch，20epoch ≈ 29 分钟，开销可接受。
+
+### 新增文件
+
+```text
+configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_5epoch.yaml
+```
