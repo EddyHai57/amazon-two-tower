@@ -1902,3 +1902,94 @@ item popularity bucket evaluation 完成后，需要继续对 full test non-cold
 
 - 本 issue 已关闭，只做记录用。
 - 若后续要改善长历史用户召回，可考虑 attention pooling、时序建模或兴趣拆分，但需单独立项评估。
+
+---
+
+## 2026-05-14 - Hard Negative Mining smoke 完成（链路通过，1epoch 信号弱）
+
+- 严重程度：Low
+- 状态：Resolved（smoke 通过；是否继续 5epoch 待 Eddy 决定）
+- 日期：2026-05-14
+
+### 背景
+
+当前最终主模型（Text + Mean Pooling τ=0.15，full test Recall@50=0.076337）已完成。为探索是否能进一步改善相似 item 之间的细粒度区分，本轮做 HNM smoke test。
+
+**重要声明：**
+- 这是 smoke test，不是最终实验。
+- HNM 不替换当前主模型，不改变当前主模型结论。
+- HNM 目的是强化相似 item 判别，不是解决 true new-user cold start。
+- 只跑 1epoch limited eval；不做 20epoch、full valid/test、Faiss。
+
+### Hard Negative 构造方式
+
+- 使用已有 `item_text_embedding.npy`（153977 items, 384-dim sentence-transformer embeddings）。
+- 训练前一次性 GPU 分块预建 HN table：每 item 存储 top-5 text-cosine-similar neighbors（排除自身）。
+- 训练时每个正样本从 top-5 中选取 2 个有效 hard negatives：排除正样本自身、排除 user train history items。
+- HN table 预建耗时 ~5s；99.9% 样本成功匹配 ≥2 个有效 hard negatives。
+
+### 影响范围
+
+- 只影响 smoke 记录。
+- 新增独立脚本与配置，未修改主训练脚本。
+- 不修改 ID-only、text-enhanced、mean pooling、Text+MP τ=0.15 任何已有 baseline 或 checkpoint。
+
+### 脚本与配置
+
+```text
+scripts/train_text_mean_pool_hard_negative_smoke.py
+configs/two_tower_movies_tv_5core_text_mean_pool_hnm_smoke.yaml
+```
+
+### HNM 超参
+
+```text
+lambda_hn = 0.1
+hard_negatives_per_sample = 2
+hn_top_k = 5
+temperature = 0.15（与 baseline 一致）
+epochs = 1
+eval_max_users = 50000
+```
+
+### 1epoch limited valid 结果
+
+| 对比 | Recall@50 | delta |
+| --- | ---: | ---: |
+| Text+MP τ=0.15 epoch 1（baseline） | 0.107460 | — |
+| HNM smoke epoch 1 | 0.107840 | +0.000380 |
+
+其余指标（epoch 1 HNM）：
+
+```text
+Recall@20  = 0.075240
+Recall@50  = 0.107840
+Recall@100 = 0.140740
+NDCG@50    = 0.045099
+MRR@50     = 0.029255
+train_total_loss = 7.211303
+train_main_loss  = 7.135476
+train_hn_loss    = 0.758267
+epoch_time       = 137.65s（约 baseline 的 1.77×）
+```
+
+### 客观判断
+
+- Smoke 通过：无 OOM、nan、inf、Killed、Traceback。
+- 1epoch Recall@50 delta = +0.000380（约 +0.04% 相对提升），几乎与 baseline 持平。
+- 1epoch 信号太弱，不能作为 HNM 有效/无效的最终结论。
+- epoch 开销约 1.77× baseline，主要来自 HNM 的二次 forward pass。
+
+### 风险分析
+
+| 风险 | 说明 |
+| --- | --- |
+| false negative risk | 99.9% 样本有效，0.1% 因 history 重叠跳过；低。has_text=0 items（38.3%）HN 质量存疑（text embedding 无语义）。 |
+| 额外计算开销 | HN table 预建 ~5s；每 epoch 约 1.77× baseline。 |
+| 短期效益不明显 | 1epoch delta ≈ 0；若 5epoch 仍无改善，降级为 future-work。 |
+
+### 后续复用建议
+
+- 若继续 5epoch，应先由 Eddy 确认。
+- 5epoch 结果若仍无明显改善（建议阈值：vs baseline epoch5 Recall@50 提升 <0.002），则将 HNM 归为 future-work，不进入正式实验。
+- 不要把 smoke 结果写成已超过 baseline 或已改善最终主模型的结论。
