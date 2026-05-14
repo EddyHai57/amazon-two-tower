@@ -2096,3 +2096,94 @@ epoch_time       = 199.67s（约 baseline 的 2.56×）
   3. 减少 hard_negatives_per_sample（如 1）；
   4. 或考虑 in-batch top-K 替代预计算静态 HN table（实现 online dynamic HNM）。
 - 不要把本 smoke 结果写成 model-based HNM 无效的最终结论；epoch1 信号过早，仅说明当前 lambda_hn=0.1 在 epoch1 不适合。
+
+## 2026-05-14 - Semi-hard HNM smoke 完成（epoch1 Recall@50 有边际改善，接近但未达到 0.109 阈值，不继续 5epoch）
+
+- 严重程度：Low（exploratory experiment）
+- 状态：Completed — smoke passed，不继续 5epoch
+
+### 实验配置
+
+```text
+model_hn_checkpoint = outputs/text_mean_pool_tau015_20ep/checkpoints/best_model.pt
+hn_top_k_search = 300
+semi_hard_start_rank = 50
+semi_hard_end_rank = 200
+n_candidates_per_item = 150
+lambda_hn = 0.03
+hard_negatives_per_sample = 2
+temperature = 0.15
+epochs = 1
+eval_max_users = 50000
+```
+
+Semi-hard 核心思想：跳过每个 item 模型 embedding 空间中最相似的 top-50 neighbors（rank 0–49），改从 rank 50–199 中采样。这些 candidates 仍与 positive item 相似，但难度较低，预期减少 false negative 风险和初期梯度冲突。
+
+### 构造结果
+
+```text
+HN table shape: (153977, 150) int32
+HN table valid entries: 23096550 (100.0%)
+HN table build time: 93.20s (Faiss IndexFlatIP, top-302 search)
+Valid HN coverage (epoch 1): 4319438 / 4319438 (100%)
+hn_loss avg: 0.996296
+```
+
+### 1epoch limited valid eval 结果
+
+```text
+Recall@20  = 0.076320
+Recall@50  = 0.108840
+Recall@100 = 0.140260
+NDCG@50    = 0.045514
+MRR@50     = 0.029514
+epoch time = 336.48s（约 4.31× baseline ~78s）
+```
+
+### 四方对比（epoch1 limited Recall@50）
+
+| Model | epoch1 Recall@50 | delta vs baseline |
+| --- | ---: | ---: |
+| Baseline Text+MP τ=0.15 | 0.107460 | — |
+| Text-based HNM smoke | 0.107840 | +0.000380 |
+| Model-based top-50 HNM smoke | 0.105200 | -0.002260 |
+| **Semi-hard HNM smoke** | **0.108840** | **+0.001380** |
+
+### 客观判断
+
+1. Smoke **链路通过**：无 OOM、nan、inf、Killed、Traceback；training 稳定。
+2. epoch1 Recall@50 = 0.108840 > baseline 0.107460（+0.001380 absolute，约 +1.28% relative），是四方对比中最高。
+3. hn_loss ≈ 0.996，难度介于 text-based（0.758）和 model-based top-50（1.100）之间，符合 semi-hard 设计预期。
+4. 按任务规范：0.108840 < 0.109000 建议阈值，不推荐立即继续 5epoch。
+5. 额外计算开销：epoch 336s ≈ 4.31× baseline；主要瓶颈在 compute_hn_loss 中 150 candidates 的 Python 循环。
+
+### 是否建议继续 5epoch
+
+**不推荐立即继续。**
+
+- Recall@50 未达 0.109 阈值；1epoch 信号改善有限。
+- 每 epoch 4.31× 计算开销，5epoch ≈ 1680s，性价比不确定。
+- 当前主线实验已完成；Semi-hard HNM 属于 exploratory future-work。
+
+若将来继续：
+- 可优先批量化 compute_hn_loss 中的 candidates 过滤逻辑以降低 epoch 开销；
+- 或调整 rank band（如 50–100）减少 candidates 数量；
+- 或适当增大 lambda_hn（如 0.05）观察多 epoch 收敛趋势。
+
+### 输出文件（不提交）
+
+```text
+outputs/text_mean_pool_semi_hnm_smoke/
+outputs/text_mean_pool_semi_hnm_smoke/run_config.json
+outputs/text_mean_pool_semi_hnm_smoke/semi_hnm_smoke_results.json
+outputs/text_mean_pool_semi_hnm_smoke/summary.json
+outputs/text_mean_pool_semi_hnm_smoke/checkpoints/epoch_1.pt
+logs/text_mean_pool_semi_hnm_smoke.log
+```
+
+### 新增文件（待提交）
+
+```text
+scripts/train_text_mean_pool_semi_hard_negative_smoke.py
+configs/two_tower_movies_tv_5core_text_mean_pool_semi_hnm_smoke.yaml
+```
