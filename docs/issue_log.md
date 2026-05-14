@@ -2473,3 +2473,84 @@ configs/two_tower_movies_tv_5core_text_time_decay_popularity_smoke.yaml  (新增
 docs/daily_logs/2026-05-13.md  (修改：追加 popularity smoke 结果)
 docs/issue_log.md  (本条目)
 ```
+
+---
+
+## [2026-05-14] Faiss Benchmark — Time-decay Text+MP Two-Tower τ=0.15（COMPLETED）
+
+**Checkpoint:** `outputs/text_time_decay_mean_pool_20ep/checkpoints/best_model.pt`（epoch=17）
+
+**任务：** 对最终主模型运行 offline Faiss IndexFlatIP 检索 benchmark，验证检索指标与 full eval 一致，并记录延迟/吞吐量。
+
+**Faiss 检索指标（全量 test，496,470 用户）：**
+
+| Metric | Faiss | Full Eval | Delta |
+| --- | ---: | ---: | ---: |
+| Recall@20 | 0.052724 | — | — |
+| Recall@50 | **0.078315** | **0.078315** | **0.000000** |
+| Recall@100 | 0.104792 | — | — |
+| NDCG@50 | 0.030862 | — | — |
+| MRR@50 | 0.019036 | — | — |
+
+**一致性：** Faiss Recall@50 = full eval（delta=0）✓
+
+**延迟/吞吐量：**
+
+| 指标 | 值 |
+| --- | ---: |
+| 吞吐量 | 1,165 users/s |
+| 平均延迟 | 0.858 ms/user |
+| 搜索总时间 | 426.15 s |
+
+**结论：** IndexFlatIP 协议正确，最终模型检索性能已全量验证。
+
+**新增文件：**
+
+```text
+scripts/benchmark_faiss_time_decay_text_mean_pool.py  (新增)
+docs/daily_logs/2026-05-13.md  (修改：追加 Faiss benchmark 结果)
+docs/issue_log.md  (本条目)
+```
+
+---
+
+## [2026-05-14] Faiss IVF Benchmark — Time-decay Text+MP Two-Tower τ=0.15（COMPLETED）
+
+**Checkpoint:** `outputs/text_time_decay_mean_pool_20ep/checkpoints/best_model.pt`（epoch=17）
+
+**任务：** 对最终主模型运行 offline Faiss IndexIVFFlat benchmark，对比 recall / speed trade-off。不重新训练。
+
+**IVF 参数：** IndexIVFFlat，nlist=4096，nprobe=32 / 64，K_SEARCH=300。
+
+**Embeddings：** 复用 FlatIP run 已保存的 item_embeddings.npy + test_user_embeddings.npy（一致性已验证）。
+
+**结果：**
+
+| Metric | FlatIP (exact) | IVF nprobe=32 | IVF nprobe=64 |
+| --- | ---: | ---: | ---: |
+| **Recall@50** | **0.078315** | **0.078172** | **0.078365** |
+| Recall@20 | 0.052724 | 0.052662 | 0.052720 |
+| Recall@100 | 0.104792 | 0.104979 | 0.105030 |
+| NDCG@50 | 0.030862 | 0.030803 | 0.030872 |
+| MRR@50 | 0.019036 | 0.018995 | 0.019038 |
+
+**与 FlatIP 对比（nprobe=32）：** delta = −0.000143（−0.18%）
+
+**延迟：**
+
+| 指标 | FlatIP | IVF nprobe=32 |
+| --- | ---: | ---: |
+| Search time | 426.15 s | 17.05 s |
+| 吞吐量 | 1,165 users/s | 29,114 users/s |
+| 平均延迟 | 0.858 ms/user | 0.034 ms/user |
+| Speedup | — | **25.0×** |
+
+**结论 A：** IVF nprobe=32 Recall@50 仅损失 0.18%，搜索速度提升 25.0×。IVF 可替代 FlatIP 用于离线批量检索。
+
+**新增文件：**
+
+```text
+scripts/benchmark_faiss_ivf_time_decay_text_mean_pool.py  (新增)
+docs/daily_logs/2026-05-13.md  (修改：追加 IVF benchmark 结果)
+docs/issue_log.md  (本条目)
+```
