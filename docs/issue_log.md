@@ -1993,3 +1993,106 @@ epoch_time       = 137.65s（约 baseline 的 1.77×）
 - 若继续 5epoch，应先由 Eddy 确认。
 - 5epoch 结果若仍无明显改善（建议阈值：vs baseline epoch5 Recall@50 提升 <0.002），则将 HNM 归为 future-work，不进入正式实验。
 - 不要把 smoke 结果写成已超过 baseline 或已改善最终主模型的结论。
+
+---
+
+## 2026-05-14 - Model-based HNM smoke 完成（epoch1 Recall@50 低于 baseline，停止）
+
+- 严重程度：Low
+- 状态：Resolved（smoke 完成；不建议继续 5epoch）
+- 日期：2026-05-14
+
+### 背景
+
+Text-based HNM smoke（使用 frozen text embeddings 选 hard negatives）在 epoch1 Recall@50 仅比 baseline 高 +0.000380（几乎持平），且 38.3% 无 text metadata 的 item 其 text HN 质量存疑。本轮改用当前最终模型（Text+MP τ=0.15，epoch=20）导出的 item embeddings 来构建 HN table，理论上更接近"模型真正容易混淆的 negatives"。
+
+**重要声明：**
+- 这是 smoke test，不是最终实验。
+- 不替换当前主模型（full test Recall@50=0.076337）。
+- HNM 目的是强化 item 细粒度区分，不是解决 true new-user cold start。
+- 只跑 1epoch limited eval；不做 5epoch、full valid/test、Faiss。
+
+### Hard Negative 构造方式
+
+- 加载最终模型 checkpoint：`outputs/text_mean_pool_tau015_20ep/checkpoints/best_model.pt`（epoch=20）。
+- 导出所有 153977 个 item 的 L2 normalized item embeddings（dim=64）。
+- 使用 **Faiss IndexFlatIP**（inner product = cosine for L2 normalized vectors）查找每个 item 的 top-50 nearest neighbors，排除自身。
+- HN table：`(153977, 50)` int32，100% 有效条目。
+- 训练时每个正样本从 top-50 中选取 2 个有效 hard negatives：排除正样本自身、排除 user train history items。
+- **100%（4319438/4319438）的训练样本有效**（top_k=50 消除了 history 重叠导致的无效样本问题）。
+- HN table 构建耗时：68.91s。
+
+### 影响范围
+
+- 只影响 smoke 记录。
+- 新增独立脚本与配置，未修改主训练脚本。
+- 不修改任何已有 baseline 或 checkpoint。
+
+### 脚本与配置
+
+```text
+scripts/train_text_mean_pool_model_hard_negative_smoke.py
+configs/two_tower_movies_tv_5core_text_mean_pool_model_hnm_smoke.yaml
+```
+
+### HNM 超参
+
+```text
+model_hn_checkpoint = outputs/text_mean_pool_tau015_20ep/checkpoints/best_model.pt
+lambda_hn = 0.1
+hard_negatives_per_sample = 2
+hn_top_k = 50（Faiss IndexFlatIP，model embedding space）
+temperature = 0.15（与 baseline 一致）
+epochs = 1
+eval_max_users = 50000
+```
+
+### 1epoch limited valid 结果
+
+| Model | epoch1 limited Recall@50 | delta vs baseline |
+| --- | ---: | ---: |
+| Baseline Text+MP τ=0.15 | 0.107460 | — |
+| Text-based HNM smoke | 0.107840 | +0.000380 |
+| **Model-based HNM smoke** | **0.105200** | **-0.002260** |
+
+其余指标（epoch 1 Model-based HNM）：
+
+```text
+Recall@20  = 0.074420
+Recall@50  = 0.105200
+Recall@100 = 0.137280
+NDCG@50    = 0.044351
+MRR@50     = 0.028933
+train_total_loss = 7.264517
+train_main_loss  = 7.154447
+train_hn_loss    = 1.100696（高于 text-based 0.758，model-based HN 更难）
+epoch_time       = 199.67s（约 baseline 的 2.56×）
+```
+
+### 客观判断
+
+1. Smoke 通过：无 OOM、nan、inf、Killed、Traceback；loss 下降正常。
+2. 1epoch limited valid Recall@50 = `0.105200`，**低于** baseline `0.107460`，delta = `-0.002260`（约 -2.1% 相对下降）。
+3. model-based hn_loss 均值 ≈ 1.10 高于 text-based hn_loss ≈ 0.76，确认 model-based HN 更难（模型更难区分）。但在 epoch1 阶段，过硬的 HN 可能与 main loss 梯度方向冲突，导致 epoch1 指标低于 baseline。
+4. 有效 HN 覆盖率 100%，优于 text-based 99.9%；top_k=50 完全解决了 history 重叠问题。
+5. **per task spec：epoch1 Recall@50 低于 baseline，不建议继续 5epoch**。
+6. 当前最终主模型结论（full test Recall@50=0.076337）不变。
+
+### 风险分析
+
+| 风险 | 说明 |
+| --- | --- |
+| epoch1 Recall@50 低于 baseline | Model-based HN 在初始化阶段过硬；梯度干扰 main loss；需要减小 lambda_hn 或加 warmup。 |
+| HN table 静态 | HN 来自 final model embeddings（训练前一次性导出），不随 training model 更新；属于 static HNM，非 online dynamic HNM。 |
+| 额外计算开销 | HN table 构建 68.91s；每 epoch 约 2.56× baseline；显著高于 text-based 的 1.77×。 |
+| false negative risk | 100% coverage，history 排除完整；false negative 风险低。 |
+
+### 后续复用建议
+
+- 本 smoke 结果（epoch1 Recall@50 < baseline）不支持继续 5epoch，按 task spec 停止。
+- 若未来重试 model-based HNM，建议：
+  1. 减小 lambda_hn（如 0.01 或 0.05）；
+  2. 加 warmup（前 N epoch 不引入 HN loss）；
+  3. 减少 hard_negatives_per_sample（如 1）；
+  4. 或考虑 in-batch top-K 替代预计算静态 HN table（实现 online dynamic HNM）。
+- 不要把本 smoke 结果写成 model-based HNM 无效的最终结论；epoch1 信号过早，仅说明当前 lambda_hn=0.1 在 epoch1 不适合。
