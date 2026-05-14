@@ -1814,3 +1814,46 @@ relative change = +15.59%
 - τ=0.15 full test Recall@50 is higher than τ=0.07 under the current offline full evaluation setup.
 - This validates that the τ=0.15 limited-valid improvement transferred to full valid/test in this run.
 - This is offline evaluation only; it does not imply online improvement, does not claim the model exceeds ItemCF, and does not prove global optimality.
+
+## 2026-05-14 - Cold-start / long-tail item bucket evaluation completed
+
+- 严重程度：Low
+- 状态：Resolved
+- 日期：2026-05-14
+
+### 现象
+
+需要在 full test split 上按 target item 的 train interaction count 切 popularity bucket，检查最终主模型 Text + Mean Pooling τ=0.15 在 low-frequency / long-tail / mid-frequency / head item 上的 Recall@50 表现。
+
+### 影响范围
+
+- 只做 evaluation，不重新训练。
+- Text + Mean Pooling τ=0.15 使用已有 checkpoint：`outputs/text_mean_pool_tau015_20ep/checkpoints/best_model.pt`。
+- Bucket 定义基于 train split item interaction count：`<=5`、`6-20`、`21-100`、`>100`。
+- `<=5` 是 low-frequency / cold-start-like item，不是 completely unseen item cold start。
+- ItemCF / ID-only bucket metrics 复用 2026-05-11 D2 popularity bucket matrix docs 记录。
+- Mean Pooling / Text+MP τ=0.15 bucket metrics 本轮从已有 checkpoints 计算。
+- 未运行 Faiss，未做 Hard Negative Mining，未改模型结构。
+
+### 输出
+
+```text
+outputs/cold_start_eval/results.md
+outputs/cold_start_eval/results.json
+```
+
+### 结果
+
+| bucket by train item count | test targets | ItemCF R@50 | ID-only R@50 | Mean Pool R@50 | Text+MP τ=0.15 R@50 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| <=5 | 35045 | 0.040405 | 0.023284 | 0.024083 | 0.031046 |
+| 6-20 | 87067 | 0.047940 | 0.043748 | 0.046458 | 0.056933 |
+| 21-100 | 161718 | 0.060890 | 0.062918 | 0.063703 | 0.079564 |
+| >100 | 212640 | 0.122522 | 0.054604 | 0.060233 | 0.083277 |
+
+### 客观判断
+
+- Text+MP τ=0.15 在四个 bucket 均高于 Mean Pooling 和 ID-only。
+- Text+MP τ=0.15 在 `>100` head bucket 上 Recall@50 最高，但仍低于 ItemCF。
+- 在 `<=5` 和 `6-20` low-frequency / long-tail buckets 上，Text+MP τ=0.15 相比 Mean Pooling 分别提升 `+0.006962` 和 `+0.010475` Recall@50。
+- 该结果是 offline test bucket evaluation，不代表线上效果，也不声称超过 ItemCF。
