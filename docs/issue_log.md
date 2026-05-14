@@ -2437,3 +2437,39 @@ outputs/user_history_bucket_eval_time_decay/results.md    (不提交)
 docs/daily_logs/2026-05-13.md                             (修改：追加 diagnostic 结果)
 docs/issue_log.md                                         (本条目)
 ```
+
+---
+
+## 2026-05-14 - Item Popularity Bucket Feature Smoke 完成（结果低于 baseline）
+
+- 严重程度：N/A（探索实验，已按规则停止）
+- 状态：已完成（不继续）
+
+### 实验内容
+
+在 Time-decay Text+MP τ=0.15 基础上，item tower 新增 popularity bucket embedding（4 buckets × 64 dim），验证是否带来提升。只跑 1epoch limited eval。
+
+### 结果
+
+| Model | epoch1 limited Recall@50 |
+| --- | ---: |
+| Time-decay Text+MP τ=0.15（baseline） | 0.114420 |
+| Time-decay + item popularity (pop_weight=0.1) | **0.113600** |
+
+delta = −0.000820（−0.72%）。
+
+### 客观结论
+
+1. 1epoch Recall@50 = 0.113600 **低于** time-decay baseline（0.114420）。
+2. 按决策规则（< 0.114420 → 停止），**不进入 5epoch**。
+3. 当前最终主模型仍为 Time-decay Text+MP τ=0.15（full test Recall@50 = 0.078315）。
+4. 没有 full valid/test，没有 Faiss，没有 HNM，没有 popularity_weight sweep。
+
+### 新增文件
+
+```text
+scripts/train_text_time_decay_popularity_two_tower_smoke.py  (新增)
+configs/two_tower_movies_tv_5core_text_time_decay_popularity_smoke.yaml  (新增)
+docs/daily_logs/2026-05-13.md  (修改：追加 popularity smoke 结果)
+docs/issue_log.md  (本条目)
+```
