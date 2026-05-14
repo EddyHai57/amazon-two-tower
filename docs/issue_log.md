@@ -1741,3 +1741,76 @@ Best newly tested larger τ = 0.20
 - τ=0.15 remains the best value among τ=0.10/0.15/0.20/0.30 under this 5epoch limited-valid setting.
 - Larger temperatures did not continue improving Recall@50.
 - This remains an offline limited-valid ablation; it does not imply online improvement or full-test improvement.
+
+## 2026-05-14 - Text + Mean Pooling τ=0.15 20epoch full eval completed
+
+- 严重程度：Low
+- 状态：Resolved
+- 日期：2026-05-14
+
+### 现象
+
+Temperature sweep selected τ=0.15 under 5epoch limited-valid evaluation. 本轮需要验证 τ=0.15 的 limited-valid 提升是否迁移到 20epoch full valid/test offline evaluation。
+
+### 影响范围
+
+- 只运行 Text + Mean Pooling Two-Tower τ=0.15 20epoch training。
+- 训练期间使用 50K limited valid。
+- 使用 best checkpoint 运行 full valid/test eval。
+- 未改 batch size、learning rate、seed、history_max_len、history_weight、text embedding path、item fusion 或模型结构。
+- 未运行 Faiss，未加入 Transformer、attention、LogQ 或其他结构。
+
+### 结果
+
+Limited valid best checkpoint：
+
+```text
+best_epoch = 20
+Recall@20 = 0.085960
+Recall@50 = 0.120180
+Recall@100 = 0.154460
+NDCG@50 = 0.050516
+MRR@50 = 0.032826
+```
+
+Full valid/test：
+
+```text
+full valid:
+  num_eval_users = 497137
+  num_skipped_cold_users = 312
+  Recall@20 = 0.087209
+  Recall@50 = 0.122606
+  Recall@100 = 0.157538
+  NDCG@50 = 0.051329
+  MRR@50 = 0.033241
+
+full test:
+  num_eval_users = 496470
+  num_skipped_cold_users = 979
+  Recall@20 = 0.051566
+  Recall@50 = 0.076337
+  Recall@100 = 0.102540
+  NDCG@50 = 0.029987
+  MRR@50 = 0.018414
+```
+
+Comparison vs Text + Mean Pooling τ=0.07 full eval：
+
+```text
+τ=0.07 full valid Recall@50 = 0.099628
+τ=0.15 full valid Recall@50 = 0.122606
+absolute change = +0.022978
+relative change = +23.06%
+
+τ=0.07 full test Recall@50 = 0.066042
+τ=0.15 full test Recall@50 = 0.076337
+absolute change = +0.010295
+relative change = +15.59%
+```
+
+### 客观判断
+
+- τ=0.15 full test Recall@50 is higher than τ=0.07 under the current offline full evaluation setup.
+- This validates that the τ=0.15 limited-valid improvement transferred to full valid/test in this run.
+- This is offline evaluation only; it does not imply online improvement, does not claim the model exceeds ItemCF, and does not prove global optimality.
