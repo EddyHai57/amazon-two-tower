@@ -1660,3 +1660,84 @@ full test Recall@50:  0.066042 vs 0.061601, absolute delta +0.004441
 - 组合模型在当前 offline full valid/test evaluation 中高于 mean pooling 单独模型。
 - 该结果说明 text item signal 在 mean pooling user tower 基础上仍有边际收益。
 - 不能把该结果写成线上效果、超过 ItemCF 或最终架构一定最优。
+
+## 2026-05-13 - Text + Mean Pooling temperature sweep completed
+
+- 严重程度：Low
+- 状态：Resolved
+- 日期：2026-05-13
+
+### 现象
+
+为 5/15 项目报告和简历补充 ablation，需要在 Text + Mean Pooling Two-Tower 架构上检查 softmax temperature τ 对 limited-valid retrieval metrics 的影响。
+
+### 影响范围
+
+- 只运行 5epoch limited valid eval，`eval_max_users=50000`。
+- τ values: `0.05`, `0.07`, `0.10`, `0.15`。
+- τ=0.07 复用已有 Text + Mean Pooling 5epoch limited valid 结果。
+- 除 τ 外所有超参保持不变。
+- 未运行 full valid/test，未运行 Faiss，未加入 Transformer、attention、LogQ 或其他结构。
+
+### 结果
+
+| temperature τ | valid Recall@20 | valid Recall@50 | valid Recall@100 | valid NDCG@50 | valid MRR@50 | best epoch | note |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 0.05 | 0.061800 | 0.088840 | 0.115280 | 0.037190 | 0.024179 | 2 | new run |
+| 0.07 | 0.070440 | 0.099020 | 0.125780 | 0.042686 | 0.028408 | 3 | reused existing 5epoch result |
+| 0.10 | 0.081560 | 0.111880 | 0.142600 | 0.048586 | 0.032416 | 5 | new run |
+| 0.15 | 0.083240 | 0.117240 | 0.150240 | 0.049176 | 0.031891 | 4 | new run |
+
+```text
+Best τ = 0.15
+Recall@50 absolute change vs τ=0.07 = +0.018220
+Recall@50 relative change vs τ=0.07 = +18.40%
+```
+
+### 客观判断
+
+- τ=0.15 achieved the best limited-valid Recall@50 in this sweep.
+- A higher temperature improved the 5epoch limited-valid result for the current Text + Mean Pooling architecture.
+- This remains an offline limited-valid ablation; it does not imply online improvement or full-test improvement.
+
+## 2026-05-14 - Text + Mean Pooling extended temperature sweep completed
+
+- 严重程度：Low
+- 状态：Resolved
+- 日期：2026-05-14
+
+### 现象
+
+上一轮 temperature sweep 中 τ=0.15 was the best under 5epoch limited-valid evaluation. 本轮继续测试更大的 τ=0.20 和 τ=0.30，确认是否还能继续提升。
+
+### 影响范围
+
+- 架构仍为 Text + Mean Pooling Two-Tower。
+- 只改变 τ。
+- τ=0.15 复用上一轮结果。
+- τ=0.20 和 τ=0.30 是新 5epoch limited-valid runs。
+- 除 τ 外所有超参保持不变。
+- 未运行 full valid/test，未运行 Faiss，未加入 Transformer、attention、LogQ 或其他结构。
+
+### 结果
+
+| temperature τ | valid Recall@20 | valid Recall@50 | valid Recall@100 | valid NDCG@50 | valid MRR@50 | best epoch | note |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 0.10 | 0.081560 | 0.111880 | 0.142600 | 0.048586 | 0.032416 | 5 | previous sweep reference |
+| 0.15 | 0.083240 | 0.117240 | 0.150240 | 0.049176 | 0.031891 | 4 | previous best from initial sweep |
+| 0.20 | 0.078500 | 0.113700 | 0.148660 | 0.046526 | 0.029581 | 4 | new run |
+| 0.30 | 0.069300 | 0.102440 | 0.138040 | 0.040254 | 0.024696 | 2 | new run |
+
+```text
+Best τ = 0.15
+Recall@50 absolute change vs τ=0.15 = +0.000000
+Recall@50 relative change vs τ=0.15 = +0.00%
+Best newly tested larger τ = 0.20
+τ=0.20 Recall@50 delta vs τ=0.15 = -0.003540
+```
+
+### 客观判断
+
+- τ=0.15 remains the best value among τ=0.10/0.15/0.20/0.30 under this 5epoch limited-valid setting.
+- Larger temperatures did not continue improving Recall@50.
+- This remains an offline limited-valid ablation; it does not imply online improvement or full-test improvement.
