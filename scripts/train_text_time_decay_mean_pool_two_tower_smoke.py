@@ -117,6 +117,10 @@ TRAIN_LOG_FIELDS = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Smoke: Text + Time-decay Mean Pooling Two-Tower.")
     parser.add_argument("--config", required=True, help="YAML config path.")
+    parser.add_argument("--eval_only", action="store_true", help="Load checkpoint and run valid/test eval only.")
+    parser.add_argument("--full_eval", action="store_true", help="Use all non-cold valid/test users in eval-only mode.")
+    parser.add_argument("--checkpoint", help="Checkpoint path for eval-only mode.")
+    parser.add_argument("--eval_output_dir", help="Output directory for eval-only metrics.")
     return parser.parse_args()
 
 
@@ -825,12 +829,149 @@ def train(config: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def write_full_eval_report(
+    path: Path,
+    config: dict[str, Any],
+    checkpoint_path: Path,
+    valid_metrics: dict[str, Any],
+    test_metrics: dict[str, Any],
+) -> None:
+    baselines = [
+        ("ID-only Two-Tower", 0.09214361433568614, 0.05319757487864322, 0.021494396747563677, 0.013541905091225163),
+        ("Text-enhanced Two-Tower", 0.093940, 0.054561, float("nan"), float("nan")),
+        ("Mean Pooling Two-Tower", 0.0963094680138473, 0.061600902370737405, 0.02517581479994934, 0.01604731321849958),
+        ("Text + Mean Pooling τ=0.15", 0.122606, 0.076337, 0.029987, 0.018414),
+        ("Time-decay Text+MP τ=0.15 decay=0.8", valid_metrics["recall@50"], test_metrics["recall@50"], test_metrics["ndcg@50"], test_metrics["mrr@50"]),
+    ]
+    lines = [
+        "# Text + Time-decay Mean Pooling Two-Tower Full Eval Report",
+        "",
+        "## Scope",
+        "",
+        "- Eval-only from the best time-decay mean pooling checkpoint.",
+        f"- decay_rate={config.get('decay_rate', 0.8)} (newest item weight=1.0, oldest decreases exponentially).",
+        "- Full valid/test over all non-cold users.",
+        "- Offline evaluation only; not online performance.",
+        "",
+        "## Inputs",
+        "",
+        f"- config: `{config.get('config_path', '')}`",
+        f"- checkpoint: `{checkpoint_path}`",
+        f"- text embedding: `{config['item_text_embedding_path']}`",
+        f"- has_text mask: `{config['item_has_text_path']}`",
+        "",
+        "## Metrics",
+        "",
+        "| Model | Split | Eval users | Skipped cold users | Recall@20 | Recall@50 | Recall@100 | NDCG@50 | MRR@50 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        (
+            f"| Time-decay Text+MP τ=0.15 | full valid | {valid_metrics['num_eval_users']} | "
+            f"{valid_metrics['num_skipped_cold_users']} | {valid_metrics['recall@20']:.6f} | "
+            f"{valid_metrics['recall@50']:.6f} | {valid_metrics['recall@100']:.6f} | "
+            f"{valid_metrics['ndcg@50']:.6f} | {valid_metrics['mrr@50']:.6f} |"
+        ),
+        (
+            f"| Time-decay Text+MP τ=0.15 | full test | {test_metrics['num_eval_users']} | "
+            f"{test_metrics['num_skipped_cold_users']} | {test_metrics['recall@20']:.6f} | "
+            f"{test_metrics['recall@50']:.6f} | {test_metrics['recall@100']:.6f} | "
+            f"{test_metrics['ndcg@50']:.6f} | {test_metrics['mrr@50']:.6f} |"
+        ),
+        "",
+        "## Recall@50 Comparison",
+        "",
+        "| Model | Full valid Recall@50 | Full test Recall@50 | NDCG@50 test | MRR@50 test |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for model_name, valid_r50, test_r50, test_ndcg50, test_mrr50 in baselines:
+        ndcg = "" if math.isnan(test_ndcg50) else f"{test_ndcg50:.6f}"
+        mrr = "" if math.isnan(test_mrr50) else f"{test_mrr50:.6f}"
+        lines.append(f"| {model_name} | {valid_r50:.6f} | {test_r50:.6f} | {ndcg} | {mrr} |")
+    delta = test_metrics["recall@50"] - 0.076337
+    lines.extend(
+        [
+            "",
+            "## Objective Conclusion",
+            "",
+            f"- Full test Recall@50 delta vs Text + Mean Pooling τ=0.15: {delta:+.6f}",
+            "- This report only supports offline full valid/test comparison.",
+            "- No Faiss, no HNM, no decay_rate sweep.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def eval_only(config: dict[str, Any], checkpoint_path: Path, eval_output_dir: Path, full_eval: bool) -> dict[str, Any]:
+    require_config(config)
+    set_seed(int(config["seed"]))
+    if full_eval:
+        config["eval_max_users"] = None
+    eval_output_dir.mkdir(parents=True, exist_ok=True)
+    write_json(eval_output_dir / "run_config.json", config)
+    device = resolve_device(str(config["device"]))
+    bundle = load_data(Path(config["data_dir"]))
+    num_users = int(bundle.stats["n_users"])
+    history_max_len = int(config["history_max_len"])
+    train_history_matrix, _ = build_history_matrix(bundle.train_df, num_users, history_max_len)
+    test_history_frame = pd.concat([bundle.train_df, bundle.valid_df[TRAIN_COLUMNS]], ignore_index=True)
+    test_history_matrix, _ = build_history_matrix(test_history_frame, num_users, history_max_len)
+    train_seen = build_seen_items(bundle.train_df)
+    test_seen = merge_seen_items(train_seen, bundle.valid_df)
+    model = build_model(config, bundle.stats, device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    logging.info(
+        "checkpoint loaded: epoch=%s %s=%.6f",
+        checkpoint.get("epoch"),
+        checkpoint.get("best_metric_name", "best_metric"),
+        float(checkpoint.get("best_metric_value", 0.0)),
+    )
+    valid_metrics = evaluate_with_oom_retry(
+        model,
+        bundle.valid_df,
+        train_history_matrix,
+        train_seen,
+        config,
+        bundle.stats,
+        device,
+        split_name="valid_full" if full_eval else "valid",
+    )
+    write_json(eval_output_dir / ("metrics_valid_full.json" if full_eval else "metrics_valid.json"), valid_metrics)
+    test_metrics = evaluate_with_oom_retry(
+        model,
+        bundle.test_df,
+        test_history_matrix,
+        test_seen,
+        config,
+        bundle.stats,
+        device,
+        split_name="test_full" if full_eval else "test",
+    )
+    write_json(eval_output_dir / ("metrics_test_full.json" if full_eval else "metrics_test.json"), test_metrics)
+    if full_eval:
+        write_full_eval_report(eval_output_dir / "full_eval_report.md", config, checkpoint_path, valid_metrics, test_metrics)
+    summary = {
+        "checkpoint": str(checkpoint_path),
+        "output_dir": str(eval_output_dir),
+        "valid_recall@50": valid_metrics["recall@50"],
+        "test_recall@50": test_metrics["recall@50"],
+    }
+    logging.info("eval complete: %s", json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return summary
+
+
 def main() -> None:
     setup_logging()
     args = parse_args()
     config = load_config(Path(args.config))
     config["config_path"] = args.config
-    train(config)
+    if args.eval_only:
+        if not args.checkpoint:
+            raise ValueError("--eval_only requires --checkpoint")
+        if not args.eval_output_dir:
+            raise ValueError("--eval_only requires --eval_output_dir")
+        eval_only(config, Path(args.checkpoint), Path(args.eval_output_dir), args.full_eval)
+    else:
+        train(config)
 
 
 if __name__ == "__main__":
