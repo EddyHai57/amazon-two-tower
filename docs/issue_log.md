@@ -2554,3 +2554,146 @@ scripts/benchmark_faiss_ivf_time_decay_text_mean_pool.py  (新增)
 docs/daily_logs/2026-05-13.md  (修改：追加 IVF benchmark 结果)
 docs/issue_log.md  (本条目)
 ```
+
+---
+
+## ISSUE 编号：ISSUE-20260519-001
+
+### 问题标题
+
+README 与最终模型指标和配置不一致
+
+### 发生时间
+
+2026-05-19
+
+### 严重等级
+
+High
+
+### 当前状态
+
+Open
+
+### 现象
+
+README.md 中关于最终主模型的配置和指标与 CLAUDE.md、历史日志中的实际情况存在多处不一致。
+
+**问题 A：配置指向错误的模型版本**
+- README 第 218–224 行的快速运行指南引用：`two_tower_movies_tv_5core_text_mean_pool_tau015_20epoch.yaml`（无 time-decay）
+- CLAUDE.md 第 248 行声称最终主模型：`Text + Time-decay Mean Pool τ=0.15`（含 time-decay）
+
+**问题 B：性能指标数字不一致**
+- README 第 99, 102 行：Recall@50 = 0.076337（7.63%）
+- CLAUDE.md 第 248, 557 行、历史日志（2026-05-14 Faiss Benchmark）：Recall@50 = 0.078315（7.83%）
+- 数字差异：+0.001978（+2.58%）
+
+**问题 C：Faiss 最终模型命令缺失**
+- README 第 238–242 行仅列出 ID-only 版本的 Faiss benchmark 命令
+- 未列出针对最终模型（time-decay 版本）的 Faiss IVF benchmark 调用
+
+### 影响范围
+
+1. **用户体验**：按 README 快速运行指南，用户会训练出非 time-decay 版本，无法复现简历数字（0.078315）
+2. **简历一致性**：简历声称 Recall@50 = 7.83%，但 README 主表显示 7.63%，差异 +2.58%
+3. **复现可信度**：新用户在新服务器上复现时，可能选错配置文件版本
+
+### 初步原因判断
+
+项目在 2026-05-13 完成了从"Text + Mean Pooling"升级到"Text + Time-decay Mean Pooling"的工作，包括完整的 5-epoch 和 20-epoch 评估、Faiss FlatIP 和 IVF benchmark，确认最终主模型为 time-decay 版本（Recall@50 = 0.078315）。但 README.md 并未同步更新，仍然引用旧的非 time-decay 配置和数字。
+
+### 已尝试的排查步骤
+
+1. ✅ 逐行对比 README 与 CLAUDE.md 中的数字和配置名称
+2. ✅ 查阅历史日志（2026-05-09 至 2026-05-14），确认 time-decay 版本的完整评估结果
+3. ✅ 验证代码库中的实际配置文件和 Faiss 脚本存在
+
+### 最终解决方案
+
+**必须做（影响简历准确性）：**
+
+1. 更新 README 快速运行指南（第 218–224 行）：使用 `two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml`
+2. 更新 README 性能指标表格（第 99 行）：0.076337 → 0.078315
+3. 更新 README 改进说明（第 102 行）：+43.5% → +47.2%
+4. 更新 README 第 14 行的项目描述：43.5% → 47.2%
+5. 补充 README 中的 Faiss benchmark 命令：针对最终模型的 Faiss IVF benchmark 调用
+
+### 后续复用建议
+
+- 日志中的数据应视为事实源。如果代码或文档数字与日志不一致，优先更新代码/文档
+- 每次完成重要实验后，在 daily log 中明确记录"关键指标与历史基线的对比"，便于后续同步更新文档
+- 对于多个版本的配置，在 README 的快速运行指南中应明确标注"最终版本"或"推荐版本"
+
+---
+
+## ISSUE 编号：ISSUE-20260519-002
+
+### 问题标题
+
+`scripts/benchmark_faiss_time_decay_text_mean_pool.py` 缺失，导致 IVF benchmark 脚本无法运行
+
+### 发生时间
+
+2026-05-19（在新服务器上检查脚本完整性时发现）
+
+### 严重等级
+
+High
+
+### 当前状态
+
+Open
+
+### 现象
+
+`scripts/benchmark_faiss_ivf_time_decay_text_mean_pool.py` 第 47 行存在以下 import：
+
+```python
+import benchmark_faiss_time_decay_text_mean_pool as flat_bench  # noqa: E402
+```
+
+但 `scripts/benchmark_faiss_time_decay_text_mean_pool.py` 文件在当前仓库中不存在。运行 IVF benchmark 脚本将立即报错：
+
+```text
+ModuleNotFoundError: No module named 'benchmark_faiss_time_decay_text_mean_pool'
+```
+
+### 影响范围
+
+1. **IVF benchmark 无法执行**：`benchmark_faiss_ivf_time_decay_text_mean_pool.py` 依赖缺失模块，新服务器上无法直接运行
+2. **README 快速运行指南失效**：README step 5 中引用该 IVF 脚本，实际会失败
+3. **历史数字可信**：2026-05-14 的 issue_log 已记录 IVF benchmark 完整结果（Recall@50 = 0.078172，25× speedup），这些数字来自历史运行，是可信的
+4. **复现链路中断**：新服务器上无法从零复现最终模型的 Faiss IVF benchmark
+
+### 初步原因判断
+
+根据 2026-05-14 issue_log 记录（`benchmark_faiss_time_decay_text_mean_pool.py (新增)`），该文件曾被创建并用于运行历史 benchmark，但未被 commit 到 git。可能原因：
+- 运行完成后未 commit（或被 `.gitignore` 误过滤）
+- 该脚本被当作临时脚本使用后遗失
+
+### 已尝试的排查步骤
+
+1. ✅ 确认文件在当前工作树不存在：`ls scripts/benchmark_faiss*.py`
+2. ✅ 确认 git 历史中从未 commit 过该文件：`git log --all -- scripts/benchmark_faiss_time_decay_text_mean_pool.py`（无输出）
+3. ✅ 确认 IVF 脚本第 47 行确实 import 了该缺失模块
+4. ✅ 确认历史 benchmark 数字记录在 issue_log（2026-05-14 Faiss Benchmark 条目），数字可信
+
+### 最终解决方案
+
+**必须做（复现路径修复）：**
+1. 重新创建 `scripts/benchmark_faiss_time_decay_text_mean_pool.py`（FlatIP 版本，用于最终模型的精确检索 benchmark）
+2. 验证 IVF 脚本能正常 import 并运行
+3. 将两个脚本一起 commit
+
+**解决后验证命令：**
+```bash
+.venv/bin/python -m py_compile scripts/benchmark_faiss_time_decay_text_mean_pool.py
+.venv/bin/python -m py_compile scripts/benchmark_faiss_ivf_time_decay_text_mean_pool.py
+```
+
+**注意**：修复需要 checkpoint（`outputs/text_time_decay_mean_pool_20ep/checkpoints/best_model.pt`）和 item text embeddings（`outputs/item_text_embeddings/`），这两者在新服务器上均不存在，需要先训练模型。
+
+### 后续复用建议
+
+- 每次新增脚本并运行实验后，必须同步 commit 脚本文件到 git
+- 不要把脚本当作临时文件——凡是运行过的脚本都应该 commit，以确保复现路径完整

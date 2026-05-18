@@ -11,7 +11,7 @@
 - 从 ID-only baseline 出发，与传统 ItemCF 正面对比
 - 逐步引入 item 文本特征（sentence-transformer frozen embeddings）和用户历史 mean pooling
 - 通过温度系数调优、Faiss 索引加速、流行度分桶诊断，揭示不同方法在头部 / 中段 / 长尾 item 上的差异化优势
-- 最终架构相比 ID-only baseline 在 full test Recall@50 上提升 **43.5%**
+- 最终架构相比 ID-only baseline 在 full test Recall@50 上提升 **47.2%**
 
 **核心约束**：
 - 5-core clean split，严格 leave-one-out 时序划分，无时间泄漏
@@ -43,24 +43,25 @@ ID-only Two-Tower
 ├── Mean Pooling user tower（user history mean pooling）
 └── Text + Mean Pooling（item text + user history mean pooling）
     └── Temperature Sweep（τ = 0.05 / 0.07 / 0.10 / 0.15 / 0.20 / 0.30）
-        └── τ = 0.15 → 20epoch → 当前最终主模型
+        └── τ = 0.15 → 20epoch
+            └── Time-decay Weighted Mean Pooling → 20epoch → 当前最终主模型
 ```
 
 ---
 
 ## 最终主模型架构
 
-**Text + Mean Pooling Two-Tower，τ = 0.15**
+**Text + Time-decay Mean Pooling Two-Tower，τ = 0.15**
 
 ### 用户塔
 
 ```
-user_vec = user_id_emb(u) + history_weight × mean( item_id_emb(h) for h in history )
+user_vec = user_id_emb(u) + time_decay_weighted_mean( item_id_emb(h) for h in history )
 ```
 
 - `user_id embedding`：dim=64，随机初始化
-- `history mean pooling`：train split 最近 20 条历史 item-id embedding 均值；训练时排除当前正样本 item，避免 target leakage
-- `history_weight = 1.0`
+- `time-decay weighted mean pooling`：train split 最近 20 条历史 item-id embedding 的时间衰减加权均值；训练时排除当前正样本 item，避免 target leakage
+- 衰减方式：`weight_k = decay_rate^(seq_len-1-k)`，最近一条权重为 1.0，`decay_rate = 0.8`
 
 ### 物品塔
 
@@ -96,13 +97,13 @@ loss = softmax cross entropy（in-batch negatives） / temperature τ
 | Text-enhanced（additive，20ep） | 0.093940 | 0.054561 | — | — |
 | Mean Pooling Two-Tower（20ep） | 0.096309 | 0.061601 | 0.025176 | 0.016047 |
 | Text + Mean Pooling τ=0.07（20ep） | 0.099628 | 0.066042 | 0.026751 | 0.016922 |
-| **Text + Mean Pooling τ=0.15（20ep）** | **0.122606** | **0.076337** | **0.029987** | **0.018414** |
+| **Text + Time-decay Mean Pooling τ=0.15（20ep）** | **0.122626** | **0.078315** | **0.030862** | **0.019036** |
 
 相比 ID-only baseline：
-- Full test Recall@50：**+43.5%**（0.053198 → 0.076337）
-- Full valid Recall@50：**+33.1%**（0.092144 → 0.122606）
+- Full test Recall@50：**+47.2%**（0.053198 → 0.078315）
+- Full valid Recall@50：**+33.1%**（0.092144 → 0.122626）
 
-> 注：ItemCF full test Recall@50 = 0.083570，高于当前最终主模型 0.076337，差距主要集中在头部物品（train 交互数 >100）。详见下方 Bucket Evaluation。
+> 注：ItemCF full test Recall@50 = 0.083570，高于当前最终主模型 0.078315，差距主要集中在头部物品（train 交互数 >100）。详见下方 Bucket Evaluation。
 
 ### Temperature Ablation（5epoch limited valid，eval\_max\_users=50K）
 
@@ -148,9 +149,18 @@ loss = softmax cross entropy（in-batch negatives） / temperature τ
 
 ## 离线检索 Benchmark（Faiss）
 
-基于 ID-only checkpoint（153,977 items，dim=64），单次 Top-50 检索延迟：
+### 最终主模型 Faiss Benchmark（Time-decay Text+MP τ=0.15，全量 test 496,470 用户）
 
-> 注：benchmark 使用 ID-only checkpoint 进行工程化仿真。最终主模型（Text + Mean Pooling）的 item 向量维度相同（dim=64），embedding 结构一致，延迟特性可直接迁移。
+| 方法 | 平均延迟 | 吞吐量 | Recall@50 | vs FlatIP |
+| --- | ---: | ---: | ---: | ---: |
+| Faiss FlatIP（exact） | 0.858 ms/user | 1,165 users/s | **0.078315** | 基准 |
+| Faiss IVF-Flat（nlist=4096，nprobe=32） | **0.034 ms/user** | **29,114 users/s** | 0.078172 | −0.18% |
+
+IVF nprobe=32 相比 FlatIP 检索速度提升 **25.0×**，Recall@50 损失仅 0.18%。
+
+> 注：以上为 offline retrieval benchmark，不是线上 A/B 实测延迟。
+
+### ID-only Checkpoint Faiss 工程化验证（153,977 items，dim=64）
 
 | 方法 | P50 latency | overlap@50 vs brute-force |
 | --- | ---: | ---: |
@@ -215,30 +225,30 @@ HF_HOME=/workspace/.hf_home HF_DATASETS_CACHE=/workspace/.hf_home/datasets \
   --config configs/preprocess_movies_tv_5core.yaml
 ```
 
-### 3. 训练最终主模型（Text + Mean Pooling τ=0.15）
+### 3. 训练最终主模型（Text + Time-decay Mean Pooling τ=0.15）
 
 ```bash
-.venv/bin/python scripts/train_text_mean_pool_two_tower.py \
-  --config configs/two_tower_movies_tv_5core_text_mean_pool_tau015_20epoch.yaml \
-  2>&1 | tee logs/text_mean_pool_tau015_20ep.log
+.venv/bin/python scripts/train_text_time_decay_mean_pool_two_tower_smoke.py \
+  --config configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml \
+  2>&1 | tee logs/text_time_decay_mean_pool_20ep.log
 ```
 
 ### 4. Full valid/test offline evaluation
 
 ```bash
-.venv/bin/python scripts/train_text_mean_pool_two_tower.py \
-  --config configs/two_tower_movies_tv_5core_text_mean_pool_tau015_20epoch.yaml \
+.venv/bin/python scripts/train_text_time_decay_mean_pool_two_tower_smoke.py \
+  --config configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml \
   --eval_only --full_eval \
-  --checkpoint outputs/text_mean_pool_tau015_20ep/checkpoints/best_model.pt \
-  --eval_output_dir outputs/text_mean_pool_tau015_20ep_full_eval
+  --checkpoint outputs/text_time_decay_mean_pool_20ep/checkpoints/best_model.pt \
+  --eval_output_dir outputs/text_time_decay_mean_pool_20ep_full_eval
 ```
 
-### 5. Faiss offline retrieval benchmark
+### 5. Faiss offline retrieval benchmark（最终主模型）
 
 ```bash
-.venv/bin/python scripts/benchmark_faiss_id_two_tower.py \
-  --config configs/faiss_id_two_tower_clean_20epoch.yaml \
-  2>&1 | tee logs/faiss_id_two_tower_clean_20epoch.log
+.venv/bin/python scripts/benchmark_faiss_ivf_time_decay_text_mean_pool.py \
+  --config configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml \
+  2>&1 | tee logs/faiss_ivf_time_decay_text_mean_pool.log
 ```
 
 ---
@@ -249,18 +259,20 @@ HF_HOME=/workspace/.hf_home HF_DATASETS_CACHE=/workspace/.hf_home/datasets \
 amazon-two-tower/
 ├── configs/                          # 所有实验配置（YAML）
 │   ├── preprocess_movies_tv_5core.yaml
-│   ├── two_tower_movies_tv_5core_clean_20epoch.yaml          # ID-only baseline
-│   ├── two_tower_movies_tv_5core_mean_pool_20epoch.yaml      # Mean Pooling
-│   ├── two_tower_movies_tv_5core_text_mean_pool_tau015_20epoch.yaml  # 最终主模型
-│   ├── two_tower_movies_tv_5core_text_mean_pool_hnm_smoke.yaml       # Text-based HNM
-│   ├── two_tower_movies_tv_5core_text_mean_pool_model_hnm_smoke.yaml # Model-based HNM
+│   ├── two_tower_movies_tv_5core_clean_20epoch.yaml                   # ID-only baseline
+│   ├── two_tower_movies_tv_5core_mean_pool_20epoch.yaml               # Mean Pooling
+│   ├── two_tower_movies_tv_5core_text_mean_pool_tau015_20epoch.yaml   # Text+MP（非最终版）
+│   ├── two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml  # 最终主模型 ★
+│   ├── two_tower_movies_tv_5core_text_mean_pool_hnm_smoke.yaml        # Text-based HNM
+│   ├── two_tower_movies_tv_5core_text_mean_pool_model_hnm_smoke.yaml  # Model-based HNM
 │   └── faiss_id_two_tower_clean_20epoch.yaml
 ├── scripts/
 │   ├── preprocess_amazon.py                              # 数据预处理
 │   ├── build_item_text_embeddings.py                     # 生成 item text embeddings
 │   ├── train_two_tower.py                                # ID-only Two-Tower
 │   ├── train_mean_pool_two_tower.py                      # Mean Pooling user tower
-│   ├── train_text_mean_pool_two_tower.py                 # 最终主模型（含 eval-only）
+│   ├── train_text_mean_pool_two_tower.py                 # Text+MP（非最终版）
+│   ├── train_text_time_decay_mean_pool_two_tower_smoke.py  # 最终主模型（含 eval-only）★
 │   ├── train_text_mean_pool_hard_negative_smoke.py       # Text-based HNM smoke
 │   ├── train_text_mean_pool_model_hard_negative_smoke.py # Model-based HNM smoke
 │   ├── benchmark_faiss_id_two_tower.py                   # Faiss retrieval benchmark
