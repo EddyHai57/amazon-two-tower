@@ -716,3 +716,153 @@ B。
 - 5/15 前：整理 docs、代码 push、提炼简历叙事。
 - 5/15 后：视反馈决定是否继续 popularity correction / hybrid retrieval / text 覆盖率扩充。
 - 不做 text_proj_dim=128、concat+MLP v2、LogQ、temperature sweep 或 negative sampling 实验。
+
+---
+
+## Decision 编号：DECISION-20260513-001
+
+### 决策时间
+
+2026-05-13
+
+### 决策主题
+
+Hard Negative Mining 全系列（4 实验）关闭，标记为 future work，不进入主线。
+
+### 背景
+
+5/13–5/14 完成 4 次 HNM smoke test（1 epoch limited valid）：
+
+```text
+Text-based HNM（λ=1.0）:   0.107840  +0.35%  vs baseline 0.107460
+Model-based HNM（λ=0.1）:  0.105200  -2.10%
+Semi-hard λ=0.03:           0.108840  +1.28%  ← 系列最优
+Semi-hard λ=0.01:           0.107840  +0.35%
+```
+
+### 可选方案
+
+- A. 继续 semi-hard λ=0.03，全量训练（约 4.3× 单 epoch 成本）
+- B. 关闭 HNM 系列，标记 future work，不进入主线
+
+### 最终选择
+
+B。
+
+### 选择原因
+
+- 最优结果（semi-hard λ=0.03 +1.28%）信号过弱，1 epoch smoke 难以外推至 full training。
+- 4.3× 训练成本（每 batch 需 Faiss nearest neighbor 采样）在当前阶段 ROI 不合理。
+- Bottleneck 是采样策略（每 batch 只更新少量 HN），而非 loss 权重调整，进一步调 λ 预期收益有限。
+- 时间优先：进入多路召回融合和文档整理阶段。
+
+### 对实验可比性的影响
+
+HNM 系列作为"探索性实验"记录，不影响 final model（time-decay mean pool τ=0.15）的 canonical 数字。
+
+### 对后续开发的影响
+
+HNM 标记 future work；若未来有充分训练预算，semi-hard λ=0.03 + full 20 epoch 可作为候选实验。
+
+---
+
+## Decision 编号：DECISION-20260515-001
+
+### 决策时间
+
+2026-05-15
+
+### 决策主题
+
+多路召回最终方案确立为 valid-selected 四通路加权 RRF（Recall@50 = 0.104776）。
+
+### 背景
+
+完成 v1/v2/v3/valid-selected 系列实验：
+
+```text
+v1 2ch RRF（ICF+TT）:                     0.096727
+v2 4ch equal RRF（+Text+Pop，均等权重）:  0.108766  但 avg_pop 暴涨 ×6.2，头部偏移严重
+v3 4ch wRRF（text=0.3, pop=0.5）full test: 0.103384
+valid-selected 4ch wRRF（k=100）:          0.104776  ← 最终采用
+```
+
+valid-selected 方案：权重在 valid 60-config grid search 选出（Pareto 规则），test set 仅运行一次，无 test-tuning。
+
+### 可选方案
+
+- A. 继续调权重，尝试更多 k / 通路组合
+- B. 锁定 valid-selected 结果（0.104776）为最终 pipeline，不再变更
+
+### 最终选择
+
+B。权重冻结：ICF=1.0, TT=1.0, Text=0.3, Pop=0.5, k=100。
+
+### 选择原因
+
+- valid-selected 方案权重选择无 test 污染，方法论严格。
+- 进一步调参会增加 test-tuning 风险，已无实质收益空间。
+- 当前结果（+25.4% vs ItemCF 单路）已足够支撑简历叙事。
+
+### 对实验可比性的影响
+
+v3 full test（0.103384）和 valid-selected（0.104776）均保留，前者仅作诊断参考，后者为正式主结论。
+
+### 对后续开发的影响
+
+multichannel pipeline 不再变更；后续若扩展通路，需重新做 valid grid search。
+
+---
+
+## Decision 编号：DECISION-20260519-001
+
+### 决策时间
+
+2026-05-19
+
+### 决策主题
+
+Attention pooling smoke 未达阈值，立即停止，final model（time-decay mean pool）保持不变。
+
+### 背景
+
+对 time-decay 和 attention pooling 进行 3 epoch paired smoke（50K limited valid），唯一差异为 pooling_type：
+
+```text
+Time-decay  best_epoch=2  R@50=0.119840
+Attention   best_epoch=3  R@50=0.116040
+Delta                        -0.003800  （阈值 +0.001，方向相反）
+```
+
+按桶分析：
+```text
+≤5 bucket:  time-decay 0.13961 vs attention 0.13679  delta=-0.002817
+6-20 bucket: time-decay 0.09600 vs attention 0.09101  delta=-0.004985
+>20 bucket:  无法评估（history 截断为 max_len=20，gt20 bucket 永远为空）
+```
+
+Unique hit 分析：attention 带来 667 个新命中，但失去 857 个，净差 -190 用户。
+
+### 可选方案
+
+- A. 继续 full training（20 epoch），验证 attention 是否在更多 epoch 后超越
+- B. 立即停止，time-decay 保持为 final model
+
+### 最终选择
+
+B。
+
+### 选择原因
+
+- delta = -0.0038，与继续训练阈值（+0.001）相反，gap 较大。
+- attention epoch 3 仍在上升（未收敛），但与 time-decay epoch 2 峰值差距 -0.0038，即使继续也不确定能追平。
+- gt20 bucket 因实现局限无法评估，但可观察的两个桶（≤5 和 6-20）attention 均弱于 time-decay。
+- 20 epoch full training 时间成本高，ROI 不合理。
+
+### 对实验可比性的影响
+
+time-decay mean pool τ=0.15 full test Recall@50=0.078315 保持不变，为项目 canonical 数字。
+
+### 对后续开发的影响
+
+若未来实验 attention，需修复 gt20 bucket 评估 bug（应在截断前统计实际历史长度），并考虑 learnable query projection。
