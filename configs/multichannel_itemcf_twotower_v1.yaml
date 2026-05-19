@@ -1,0 +1,40 @@
+data_dir: data/processed/movies_tv_5core
+train_config: configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml
+checkpoint: outputs/text_time_decay_mean_pool_20ep/checkpoints/best_model.pt
+output_dir: outputs/multichannel_itemcf_twotower_v1
+seed: 42
+device: cuda
+
+# Smoke test: 5000 sampled test users; full: all 496,470
+smoke_users: 5000
+
+# Candidates per channel before fusion (seen-filtered)
+candidates_per_channel: 200
+
+# Quota sweep: [itemcf_quota, tt_quota], total = itemcf + tt
+quota_sweep:
+  - [50, 0]
+  - [40, 10]
+  - [30, 20]
+  - [25, 25]
+  - [20, 30]
+  - [10, 40]
+  - [0, 50]
+
+# RRF k values and output size
+rrf_k_values: [10, 30, 60]
+rrf_top_n: 50
+
+# Eval metrics
+eval_k_list: [20, 50, 100]
+
+# Item popularity buckets for breakdown
+popularity_buckets:
+  - [1, 5]
+  - [6, 20]
+  - [21, 100]
+  - [101, null]
+
+# ItemCF settings (same as canonical run)
+itemcf_sim_topk: 100
+itemcf_max_user_history: 100

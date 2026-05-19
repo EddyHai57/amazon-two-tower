@@ -170,6 +170,65 @@ IVF nprobe=32 相比 FlatIP 检索速度提升 **25.0×**，Recall@50 损失仅 
 
 ---
 
+## 多路召回融合（Multi-channel Retrieval Fusion）
+
+两路融合：ItemCF + Text+Time-decay Mean Pool Two-Tower（最终主模型）。
+
+### 候选集互补性（ItemCF@50 vs TwoTower@50，Full Test 496,470 users）
+
+| 指标 | 值 |
+| --- | ---: |
+| avg candidate Jaccard overlap@50 | 0.0762 |
+| overlap hits（两路均命中） | 23,083 |
+| TwoTower unique hits（仅 TwoTower 命中） | 15,798 |
+| ItemCF unique hits（仅 ItemCF 命中） | 18,407 |
+
+> overlap 指标为 Jaccard index（|A∩B|/|A∪B|），不是 Recall 或 |A∩B|/50。Jaccard=0.076 对应每用户平均约 7 个交集 item，两路候选集高度互补。
+
+### Quota Sweep（Full Test Recall@50）
+
+| 融合方式 | Recall@50 | vs ItemCF |
+| --- | ---: | ---: |
+| quota_icf50_tt0（纯 ItemCF） | 0.083570 | 基准 |
+| quota_icf40_tt10 | 0.087055 | +4.2% |
+| quota_icf30_tt20 | 0.089002 | +6.5% |
+| quota_icf25_tt25 | 0.089536 | +7.1% |
+| **quota_icf20_tt30（最佳 quota）** | **0.089552** | **+7.2%** |
+| quota_icf10_tt40 | 0.087075 | +4.2% |
+| quota_icf0_tt50（纯 TwoTower） | 0.078315 | −6.3% |
+
+### RRF Sweep（Full Test Recall@50）
+
+| RRF k | Recall@50 | NDCG@50 | MRR@50 | vs ItemCF |
+| ---: | ---: | ---: | ---: | ---: |
+| k=10 | 0.095406 | 0.038773 | 0.024424 | +14.2% |
+| k=30 | 0.096389 | 0.038943 | 0.024393 | +15.4% |
+| **k=60（最佳整体）** | **0.096727** | **0.038885** | **0.024272** | **+15.8%** |
+
+### RRF k=60 按 Item 热度桶 Recall@50
+
+| Train 交互数桶 | Test targets | rrf_k60 | ItemCF | TwoTower |
+| --- | ---: | ---: | ---: | ---: |
+| ≤5（长尾） | 35,045 | **0.044029** | 0.040405 | 0.031046 |
+| 6–20 | 87,067 | **0.064008** | 0.047940 | 0.056933 |
+| 21–100 | 161,718 | **0.085018** | 0.060890 | 0.079564 |
+| >100（头部） | 212,640 | **0.127714** | 0.122522 | 0.083277 |
+
+RRF k=60 在所有热度桶上均超过单路 ItemCF 和 TwoTower。
+
+### 实验说明
+
+- **评估口径**：offline evaluation，test split，496,470 名非冷启动用户，严格 train+valid seen-item mask
+- **非线上 A/B**：所有数字均为 offline evaluation，不是线上实测
+- **RRF 实现**：score = Σ 1/(k+rank)，只使用 rank 信息，未使用任何 test label
+- **Jaccard overlap**：avg_candidate_overlap@50 = 0.0762 是 Jaccard index（|A∩B|/|A∪B|）
+- **Recall@100 = Recall@50**：当前融合候选上限为 50（rrf_top_n=50），Recall@100 与 Recall@50 相同，非独立 Top-100 评估
+- **ItemCF history**：train-only co-occurrence similarity（与 standalone ItemCF 一致）
+- **TwoTower history**：test 时使用 train+valid 历史（与 standalone eval_only 一致，预期行为）
+- 详细审计：`docs/reports/multichannel_retrieval_audit.md`
+
+---
+
 ## 探索性实验（不纳入主模型结论）
 
 ### Text-based Hard Negative Mining Smoke
@@ -251,6 +310,19 @@ HF_HOME=/workspace/.hf_home HF_DATASETS_CACHE=/workspace/.hf_home/datasets \
   2>&1 | tee logs/faiss_ivf_time_decay_text_mean_pool.log
 ```
 
+### 6. 多路召回融合（ItemCF + Two-Tower）
+
+```bash
+# Smoke test（5,000 users）
+.venv/bin/python scripts/run_multichannel_retrieval.py \
+  --config configs/multichannel_itemcf_twotower_v1.yaml
+
+# Full eval（496,470 users）
+.venv/bin/python scripts/run_multichannel_retrieval.py \
+  --config configs/multichannel_itemcf_twotower_v1.yaml \
+  --full
+```
+
 ---
 
 ## 目录结构
@@ -265,7 +337,8 @@ amazon-two-tower/
 │   ├── two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml  # 最终主模型 ★
 │   ├── two_tower_movies_tv_5core_text_mean_pool_hnm_smoke.yaml        # Text-based HNM
 │   ├── two_tower_movies_tv_5core_text_mean_pool_model_hnm_smoke.yaml  # Model-based HNM
-│   └── faiss_id_two_tower_clean_20epoch.yaml
+│   ├── faiss_id_two_tower_clean_20epoch.yaml
+│   └── multichannel_itemcf_twotower_v1.yaml              # 多路召回融合配置 ★
 ├── scripts/
 │   ├── preprocess_amazon.py                              # 数据预处理
 │   ├── build_item_text_embeddings.py                     # 生成 item text embeddings
@@ -273,6 +346,7 @@ amazon-two-tower/
 │   ├── train_mean_pool_two_tower.py                      # Mean Pooling user tower
 │   ├── train_text_mean_pool_two_tower.py                 # Text+MP（非最终版）
 │   ├── train_text_time_decay_mean_pool_two_tower_smoke.py  # 最终主模型（含 eval-only）★
+│   ├── run_multichannel_retrieval.py                     # 多路召回融合（ItemCF + Two-Tower）★
 │   ├── train_text_mean_pool_hard_negative_smoke.py       # Text-based HNM smoke
 │   ├── train_text_mean_pool_model_hard_negative_smoke.py # Model-based HNM smoke
 │   ├── benchmark_faiss_id_two_tower.py                   # Faiss retrieval benchmark
