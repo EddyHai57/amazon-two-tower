@@ -158,7 +158,8 @@ loss = softmax cross entropy（in-batch negatives） / temperature τ
 
 IVF nprobe=32 相比 FlatIP 检索速度提升 **25.0×**，Recall@50 损失仅 0.18%。
 
-> 注：以上为 offline retrieval benchmark，不是线上 A/B 实测延迟。
+> 注：以上为 offline retrieval benchmark，不是线上 A/B 实测延迟。  
+> 完整 nprobe sweep（nlist=1024，nprobe=16/32/64）及 HNSW 对比见 [`docs/reports/faiss_two_tower_benchmark.md`](docs/reports/faiss_two_tower_benchmark.md)。
 
 ### ID-only Checkpoint Faiss 工程化验证（153,977 items，dim=64）
 
