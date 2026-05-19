@@ -1,0 +1,55 @@
+data_dir: data/processed/movies_tv_5core
+train_config: configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml
+checkpoint: outputs/text_time_decay_mean_pool_20ep/checkpoints/best_model.pt
+item_text_emb_path: outputs/item_text_embeddings/movies_tv_5core/item_text_embedding.npy
+output_dir: outputs/multichannel_v3_balanced
+seed: 42
+device: cuda
+
+# Smoke test: 5000 sampled test users; full: all 496,470
+smoke_users: 5000
+
+# Candidates per channel before fusion (seen-filtered)
+candidates_per_channel: 200
+
+# Text semantic channel
+text_decay_rate: 0.8
+
+# Popularity fallback channel
+pop_buffer_size: 1000
+
+# ItemCF settings (same as canonical)
+itemcf_sim_topk: 100
+itemcf_max_user_history: 100
+
+# Eval
+eval_k_list: [20, 50, 100]
+rrf_top_n: 50
+
+# Item popularity buckets for bucket breakdown
+popularity_buckets:
+  - [1, 5]
+  - [6, 20]
+  - [21, 100]
+  - [101, null]
+
+# Pop-limited quota combos: 3-channel (ICF + TT + Pop, no text)
+# [icf_quota, tt_quota, pop_quota], sum <= 50
+pop_quota_3ch:
+  - [20, 27, 3]
+  - [20, 25, 5]
+  - [25, 22, 3]
+  - [25, 20, 5]
+
+# Pop-limited quota combos: 4-channel (ICF + TT + Text + Pop)
+# [icf_quota, tt_quota, text_quota, pop_quota], sum <= 50
+pop_quota_4ch:
+  - [20, 25, 2, 3]
+
+# Weighted RRF sweep: icf_w and tt_w fixed at 1.0; sweep pop_w and text_w
+# text_w=0.0 gives ICF+TT+Pop only (no text contribution)
+wrrf_k: 60
+wrrf_icf_w: 1.0
+wrrf_tt_w: 1.0
+wrrf_pop_weights: [0.1, 0.2, 0.3, 0.5, 1.0]
+wrrf_text_weights: [0.0, 0.2, 0.3]

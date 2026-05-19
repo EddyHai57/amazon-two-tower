@@ -1,0 +1,58 @@
+data_dir: data/processed/movies_tv_5core
+train_config: configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml
+checkpoint: outputs/text_time_decay_mean_pool_20ep/checkpoints/best_model.pt
+item_text_emb_path: outputs/item_text_embeddings/movies_tv_5core/item_text_embedding.npy
+output_dir: outputs/multichannel_v2
+seed: 42
+device: cuda
+
+# Smoke test: 5000 sampled test users; full: all 496,470
+smoke_users: 5000
+
+# Candidates per channel before fusion (seen-filtered)
+candidates_per_channel: 200
+
+# Text semantic channel
+text_decay_rate: 0.8  # mirrors TwoTower decay_rate
+
+# Popularity fallback channel: look-ahead buffer to accommodate seen items
+pop_buffer_size: 1000
+
+# ItemCF settings (same as canonical)
+itemcf_sim_topk: 100
+itemcf_max_user_history: 100
+
+# 2-channel RRF reference (replicate v1 best for sanity check)
+two_channel_rrf_k_values: [60]
+two_channel_rrf_top_n: 50
+
+# 3-channel quota sweep: [icf_quota, tt_quota, text_quota], total <= 50
+three_channel_quota_sweep:
+  - [20, 25, 5]
+  - [20, 20, 10]
+  - [15, 25, 10]
+  - [15, 20, 15]
+
+# 3-channel RRF: ItemCF + TwoTower + Text
+three_channel_rrf_k_values: [30, 60, 100]
+three_channel_rrf_top_n: 50
+
+# 4-channel quota sweep: [icf_quota, tt_quota, text_quota, pop_quota], total <= 50
+four_channel_quota_sweep:
+  - [20, 25, 3, 2]
+  - [18, 25, 5, 2]
+  - [15, 25, 5, 5]
+
+# 4-channel RRF: ItemCF + TwoTower + Text + Popularity
+four_channel_rrf_k_values: [60]
+four_channel_rrf_top_n: 50
+
+# Eval metrics
+eval_k_list: [20, 50, 100]
+
+# Item popularity buckets for breakdown
+popularity_buckets:
+  - [1, 5]
+  - [6, 20]
+  - [21, 100]
+  - [101, null]

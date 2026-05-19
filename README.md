@@ -172,9 +172,62 @@ IVF nprobe=32 相比 FlatIP 检索速度提升 **25.0×**，Recall@50 损失仅 
 
 ## 多路召回融合（Multi-channel Retrieval Fusion）
 
-两路融合：ItemCF + Text+Time-decay Mean Pool Two-Tower（最终主模型）。
+### 四通路平衡加权 RRF（V3，主要结论）
 
-### 候选集互补性（ItemCF@50 vs TwoTower@50，Full Test 496,470 users）
+**通路组合**：ItemCF + Text+Time-decay Mean Pool Two-Tower + Text Semantic + Popularity Fallback  
+**融合方式**：Weighted RRF，weights = [ICF=1.0, TT=1.0, Text=0.3, Pop=0.5]，k=60
+
+| 系统 | Recall@50 | avg_rec_popularity | vs v1 两路 RRF |
+| --- | ---: | ---: | ---: |
+| ItemCF（单路） | 0.083570 | — | 基准 |
+| Two-Tower（单路） | 0.078315 | — | — |
+| v1：2ch RRF k=60（ICF + TT） | 0.096727 | 265 | 基准 |
+| **v3：4ch Weighted RRF（主结论）** | **0.103384** | **443（1.7×）** | **+6.9%** |
+
+相比 ItemCF 单路：0.083570 → 0.103384，**+23.7% relative**
+
+#### V3 按热度桶 Recall@50（Full Test 496,470 users）
+
+| Train 交互数桶 | Test targets | v1 2ch RRF | **v3 4ch wRRF** |
+| --- | ---: | ---: | ---: |
+| ≤5（长尾） | 35,045 | 0.044029 | **0.045342** |
+| 6–20 | 87,067 | 0.064008 | **0.065639** |
+| 21–100 | 161,718 | 0.085018 | **0.086057** |
+| >100（头部） | 212,640 | 0.127714 | **0.141582** |
+
+V3 在所有热度桶上均超过 v1 两路 RRF。
+
+---
+
+### V2 诊断发现（引出 V3 的动机）
+
+在 V3 之前，我们实验了无加权的四路 RRF（v2，ICF+TT+Text+Pop，k=60，权重均为 1.0）：
+
+- Recall@50 = 0.108766（+12.4% vs v1）
+- **avg_rec_popularity 从 265 暴涨至 1,642（×6.2）**
+- 增益完全集中在 >100 头部桶（+23.3%），中/长尾桶反而退步（≤5 桶 -1.7%，21-100 桶 -3.1%）
+
+原因：Popularity 通路的 buffer 内全部为 train_count ≥ 332 的头部 item；均等 RRF 权重下，Pop 通路会把大量头部 item 推入 top-50，导致推荐偏向热门、中长尾覆盖下降。
+
+V3 通过 Popularity 权重 0.5（而非 1.0）解决此问题。实验发现 pop_w=0.5→1.0 是相变点：avg_pop 从 443 跳至 1,946（×4.4）。
+
+#### V3 与 V2 热度桶对比
+
+| Train 交互数桶 | v2 4ch RRF（均等权重） | **v3 4ch wRRF（Pop=0.5）** |
+| --- | ---: | ---: |
+| ≤5（长尾） | 0.044600 | **0.045342** |
+| 6–20 | 0.064732 | **0.065639** |
+| 21–100 | 0.082440 | **0.086057** |
+| >100（头部） | **0.157393** | 0.141582 |
+| avg_pop | 1,642（×6.2 v1） | **443（×1.7 v1）** |
+
+V3 在所有非头部桶均优于 V2，avg_pop 仅为 V2 的 27%。V3 选择的是 Recall-Diversity Pareto 最优点，而非最高 Recall 点。
+
+---
+
+### V1 两路融合结果（ICF + Two-Tower）
+
+#### 候选集互补性（ItemCF@50 vs TwoTower@50，Full Test 496,470 users）
 
 | 指标 | 值 |
 | --- | ---: |
@@ -183,49 +236,37 @@ IVF nprobe=32 相比 FlatIP 检索速度提升 **25.0×**，Recall@50 损失仅 
 | TwoTower unique hits（仅 TwoTower 命中） | 15,798 |
 | ItemCF unique hits（仅 ItemCF 命中） | 18,407 |
 
-> overlap 指标为 Jaccard index（|A∩B|/|A∪B|），不是 Recall 或 |A∩B|/50。Jaccard=0.076 对应每用户平均约 7 个交集 item，两路候选集高度互补。
+> Jaccard=0.076 对应每用户平均约 7 个交集 item，两路候选集高度互补。
 
-### Quota Sweep（Full Test Recall@50）
+#### Quota Sweep（Full Test Recall@50）
 
 | 融合方式 | Recall@50 | vs ItemCF |
 | --- | ---: | ---: |
 | quota_icf50_tt0（纯 ItemCF） | 0.083570 | 基准 |
-| quota_icf40_tt10 | 0.087055 | +4.2% |
 | quota_icf30_tt20 | 0.089002 | +6.5% |
-| quota_icf25_tt25 | 0.089536 | +7.1% |
 | **quota_icf20_tt30（最佳 quota）** | **0.089552** | **+7.2%** |
-| quota_icf10_tt40 | 0.087075 | +4.2% |
 | quota_icf0_tt50（纯 TwoTower） | 0.078315 | −6.3% |
 
-### RRF Sweep（Full Test Recall@50）
+#### RRF Sweep（Full Test Recall@50）
 
-| RRF k | Recall@50 | NDCG@50 | MRR@50 | vs ItemCF |
-| ---: | ---: | ---: | ---: | ---: |
-| k=10 | 0.095406 | 0.038773 | 0.024424 | +14.2% |
-| k=30 | 0.096389 | 0.038943 | 0.024393 | +15.4% |
-| **k=60（最佳整体）** | **0.096727** | **0.038885** | **0.024272** | **+15.8%** |
+| RRF k | Recall@50 | vs ItemCF |
+| ---: | ---: | ---: |
+| k=10 | 0.095406 | +14.2% |
+| k=30 | 0.096389 | +15.4% |
+| **k=60（v1 最佳）** | **0.096727** | **+15.8%** |
 
-### RRF k=60 按 Item 热度桶 Recall@50
-
-| Train 交互数桶 | Test targets | rrf_k60 | ItemCF | TwoTower |
-| --- | ---: | ---: | ---: | ---: |
-| ≤5（长尾） | 35,045 | **0.044029** | 0.040405 | 0.031046 |
-| 6–20 | 87,067 | **0.064008** | 0.047940 | 0.056933 |
-| 21–100 | 161,718 | **0.085018** | 0.060890 | 0.079564 |
-| >100（头部） | 212,640 | **0.127714** | 0.122522 | 0.083277 |
-
-RRF k=60 在所有热度桶上均超过单路 ItemCF 和 TwoTower。
+---
 
 ### 实验说明
 
 - **评估口径**：offline evaluation，test split，496,470 名非冷启动用户，严格 train+valid seen-item mask
-- **非线上 A/B**：所有数字均为 offline evaluation，不是线上实测
-- **RRF 实现**：score = Σ 1/(k+rank)，只使用 rank 信息，未使用任何 test label
-- **Jaccard overlap**：avg_candidate_overlap@50 = 0.0762 是 Jaccard index（|A∩B|/|A∪B|）
-- **Recall@100 = Recall@50**：当前融合候选上限为 50（rrf_top_n=50），Recall@100 与 Recall@50 相同，非独立 Top-100 评估
-- **ItemCF history**：train-only co-occurrence similarity（与 standalone ItemCF 一致）
-- **TwoTower history**：test 时使用 train+valid 历史（与 standalone eval_only 一致，预期行为）
-- 详细审计：`docs/reports/multichannel_retrieval_audit.md`
+- **非线上 A/B**：所有数字均为 offline evaluation，不是线上实测延迟
+- **RRF 实现**：score(item) = Σ w/(k+rank)，只使用 rank 信息，未使用任何 test label
+- **Popularity 通路**：只使用 train split 交互计数统计，无 test 泄漏
+- **Text Semantic 通路**：用户历史 item 文本 embedding 时间衰减均值（decay_rate=0.8），无 test 泄漏
+- **avg_rec_popularity**：用户侧 mean(train_count(推荐 item)) 的跨用户均值，衡量推荐多样性
+- **Recall@100 = Recall@50**：融合候选上限为 50（rrf_top_n=50），两者相同，非独立 Top-100 评估
+- 详细审计：`docs/reports/multichannel_retrieval_audit.md`，`docs/reports/multichannel_v3_audit.md`
 
 ---
 
@@ -310,17 +351,32 @@ HF_HOME=/workspace/.hf_home HF_DATASETS_CACHE=/workspace/.hf_home/datasets \
   2>&1 | tee logs/faiss_ivf_time_decay_text_mean_pool.log
 ```
 
-### 6. 多路召回融合（ItemCF + Two-Tower）
+### 6. 多路召回融合
 
 ```bash
-# Smoke test（5,000 users）
-.venv/bin/python scripts/run_multichannel_retrieval.py \
+# V1：两路融合（ItemCF + Two-Tower）smoke + full
+source .venv/bin/activate && python scripts/run_multichannel_retrieval.py \
   --config configs/multichannel_itemcf_twotower_v1.yaml
 
-# Full eval（496,470 users）
-.venv/bin/python scripts/run_multichannel_retrieval.py \
+source .venv/bin/activate && python scripts/run_multichannel_retrieval.py \
   --config configs/multichannel_itemcf_twotower_v1.yaml \
   --full
+
+# V2：四路融合诊断（ICF + TT + Text + Pop，均等 RRF）
+source .venv/bin/activate && python scripts/run_multichannel_retrieval_v2.py \
+  --config configs/multichannel_v2.yaml
+
+source .venv/bin/activate && python scripts/run_multichannel_retrieval_v2.py \
+  --config configs/multichannel_v2.yaml \
+  --full_only
+
+# V3：四路平衡加权 RRF（主要结论）
+source .venv/bin/activate && python scripts/run_multichannel_retrieval_v3.py \
+  --config configs/multichannel_v3_balanced.yaml
+
+source .venv/bin/activate && python scripts/run_multichannel_retrieval_v3.py \
+  --config configs/multichannel_v3_balanced.yaml \
+  --full_only
 ```
 
 ---
@@ -338,7 +394,9 @@ amazon-two-tower/
 │   ├── two_tower_movies_tv_5core_text_mean_pool_hnm_smoke.yaml        # Text-based HNM
 │   ├── two_tower_movies_tv_5core_text_mean_pool_model_hnm_smoke.yaml  # Model-based HNM
 │   ├── faiss_id_two_tower_clean_20epoch.yaml
-│   └── multichannel_itemcf_twotower_v1.yaml              # 多路召回融合配置 ★
+│   ├── multichannel_itemcf_twotower_v1.yaml              # v1 两路融合
+│   ├── multichannel_v2.yaml                              # v2 四路融合（诊断）
+│   └── multichannel_v3_balanced.yaml                     # v3 四路平衡加权 RRF ★
 ├── scripts/
 │   ├── preprocess_amazon.py                              # 数据预处理
 │   ├── build_item_text_embeddings.py                     # 生成 item text embeddings
@@ -346,7 +404,9 @@ amazon-two-tower/
 │   ├── train_mean_pool_two_tower.py                      # Mean Pooling user tower
 │   ├── train_text_mean_pool_two_tower.py                 # Text+MP（非最终版）
 │   ├── train_text_time_decay_mean_pool_two_tower_smoke.py  # 最终主模型（含 eval-only）★
-│   ├── run_multichannel_retrieval.py                     # 多路召回融合（ItemCF + Two-Tower）★
+│   ├── run_multichannel_retrieval.py                     # v1 融合（ItemCF + Two-Tower）
+│   ├── run_multichannel_retrieval_v2.py                  # v2 四路融合诊断
+│   ├── run_multichannel_retrieval_v3.py                  # v3 四路平衡加权 RRF ★
 │   ├── train_text_mean_pool_hard_negative_smoke.py       # Text-based HNM smoke
 │   ├── train_text_mean_pool_model_hard_negative_smoke.py # Model-based HNM smoke
 │   ├── benchmark_faiss_id_two_tower.py                   # Faiss retrieval benchmark
@@ -354,6 +414,7 @@ amazon-two-tower/
 │   └── eval_user_history_buckets.py                      # User history length diagnostic
 ├── docs/
 │   ├── daily_logs/                   # 按日期记录实验过程
+│   ├── reports/                      # 审计和实验报告
 │   └── issue_log.md                  # 问题记录与诊断结论
 ├── data/                             # gitignore（processed data 不提交）
 ├── outputs/                          # gitignore（checkpoints / embeddings 不提交）
