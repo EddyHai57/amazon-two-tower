@@ -1,0 +1,44 @@
+data_dir: data/processed/movies_tv_5core
+train_config: configs/two_tower_movies_tv_5core_text_timeaware_transformer_max100_final.yaml
+checkpoint: outputs/text_timeaware_transformer_max100_final/checkpoints/best_model.pt
+item_text_emb_path: outputs/item_text_embeddings/movies_tv_5core/item_text_embedding.npy
+output_dir: outputs/multichannel_transformer_final
+seed: 42
+device: cuda
+
+# Candidate generation (same as valid-selected)
+candidates_per_channel: 200
+text_decay_rate: 0.8
+pop_buffer_size: 1000
+itemcf_sim_topk: 100
+itemcf_max_user_history: 100
+
+# Eval
+eval_k_list: [20, 50, 100]
+rrf_top_n: 50
+
+# Popularity buckets
+popularity_buckets:
+  - [1, 5]
+  - [6, 20]
+  - [21, 100]
+  - [101, null]
+
+# Valid sweep: 3 x 4 x 5 = 60 configs
+sweep_k_values: [30, 60, 100]
+sweep_text_weights: [0.0, 0.1, 0.3, 0.5]
+sweep_pop_weights: [0.0, 0.1, 0.2, 0.3, 0.5]
+
+# Fixed base weights (ICF and TT always 1.0)
+sweep_icf_w: 1.0
+sweep_tt_w: 1.0
+
+# Pareto selection thresholds (same as valid-selected)
+pareto_avg_pop_multiplier: 3.0   # avg_pop <= multiplier * baseline_avg_pop
+pareto_coverage_min_frac: 0.85   # item_coverage >= frac * baseline_coverage
+pareto_recall_delta_tol: 0.001   # if recall diff < tol, prefer lower avg_pop
+pareto_bucket_min_pass: 2        # min non-head buckets not below baseline
+
+# Reference paths for comparison table
+v3_results_path: outputs/multichannel_v3_balanced/all_results_full.json
+old_valid_selected_path: outputs/multichannel_valid_selected/final_test_metrics.json
