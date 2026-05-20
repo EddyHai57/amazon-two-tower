@@ -809,6 +809,21 @@ MRR@50=0.013541905091225163
   user_tensor = torch.as_tensor(batch["user_idx"].to_numpy(dtype=np.int64), device=device)
 ```
 
+### 2026-05-20 状态更新：Superseded（不再追踪）
+
+此 issue 原追踪 ID-only Two-Tower test（0.046746）低于 ItemCF（0.083570）的 valid-test gap 问题。
+
+后续通过文本增强 → 时间衰减 → Transformer 用户塔的完整演进链路，模型能力问题已被彻底解决：
+
+```text
+Text + Time-aware Transformer TT  full test Recall@50 = 0.103168  → 超过 ItemCF（0.083570）
+4ch valid-selected wRRF            full test Recall@50 = 0.125164  → 超过 ItemCF +49.8%
+```
+
+valid-test gap 本身（ItemCF 和 Two-Tower 同量级下降约 40-43%）已被确认为 leave-one-out split-level difficulty shift，不是 Two-Tower pipeline 特有 bug。此 issue 不再需要独立追踪。
+
+**最终状态：Superseded（已被 Transformer TT 升级覆盖，2026-05-20）**
+
 ## 2026-05-11 - text-enhanced item tower 尚未实现（已解决）
 
 状态：Resolved（M6.1 已实现 smoke test）
@@ -2624,6 +2639,17 @@ README.md 中关于最终主模型的配置和指标与 CLAUDE.md、历史日志
 - 每次完成重要实验后，在 daily log 中明确记录"关键指标与历史基线的对比"，便于后续同步更新文档
 - 对于多个版本的配置，在 README 的快速运行指南中应明确标注"最终版本"或"推荐版本"
 
+### 2026-05-20 状态更新：Resolved
+
+此 issue 记录的所有不一致已在 commit b593423 中全部修复：
+
+- README 快速运行指南（Step 3-5）已更新，指向 Transformer TT 为当前最终神经通路，Time-decay 作为历史参考
+- README 指标表格已更新为当前口径（Transformer TT 0.103168，4ch 0.125164）
+- README 已补充 Transformer TT Faiss benchmark 命令（`scripts/benchmark_faiss_transformer_two_tower.py`）
+- 注：Time-decay 相关数字（0.078315）已作为历史基线保留，不删除
+
+**最终状态：Resolved（2026-05-20，commit b593423 + 后续一致性修复）**
+
 ---
 
 ## ISSUE 编号：ISSUE-20260519-002
@@ -2697,3 +2723,16 @@ ModuleNotFoundError: No module named 'benchmark_faiss_time_decay_text_mean_pool'
 
 - 每次新增脚本并运行实验后，必须同步 commit 脚本文件到 git
 - 不要把脚本当作临时文件——凡是运行过的脚本都应该 commit，以确保复现路径完整
+
+### 2026-05-20 状态更新：Superseded
+
+此 issue 记录的是旧 Time-decay TT 的 Faiss 复现链路缺失问题。
+
+现状更新：
+- 当前最终神经通路已升级为 Transformer TT（`scripts/train_transformer_maxlen100_smoke.py`）
+- 对应 Faiss benchmark 已完整实现：`scripts/benchmark_faiss_transformer_two_tower.py`（已 commit，可复现）
+- Transformer TT Faiss 结果：IVF nprobe=32，8.8× 提速，Recall 损失 −0.41%，已记录于 `docs/reports/faiss_transformer_two_tower_benchmark.md`
+- 旧 Time-decay TT 的 FlatIP 脚本（`benchmark_faiss_time_decay_text_mean_pool.py`）和 IVF 脚本（`benchmark_faiss_ivf_time_decay_text_mean_pool.py`）已被替代，复现链路不再是优先事项
+- 旧历史数字（25× speedup，Recall 损失 −0.18%）已记录于 `docs/reports/faiss_two_tower_benchmark.md`，保留供参考
+
+**最终状态：Superseded（已被 Transformer TT Faiss benchmark 覆盖，2026-05-20）**

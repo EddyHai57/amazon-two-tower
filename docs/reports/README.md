@@ -35,7 +35,8 @@ Amazon Two-Tower / Multi-channel Retrieval 项目离线实验报告。
 
 | 报告 | 内容 |
 | --- | --- |
-| [faiss_two_tower_benchmark.md](faiss_two_tower_benchmark.md) | Faiss ANN 工程验证：nprobe sweep、top-200 recall、overlap@50 对比；IVF nprobe=32 = 25× 提速，−0.18% Recall；⚠️ 基于旧 Time-decay TT checkpoint，Transformer TT Faiss 尚未重测 |
+| [faiss_transformer_two_tower_benchmark.md](faiss_transformer_two_tower_benchmark.md) | **当前**：Transformer TT Faiss ANN benchmark；IVF nprobe=32 = 8.8× 提速，−0.41% Recall；FlatIP 对齐 0.103168 ✅ |
+| [faiss_two_tower_benchmark.md](faiss_two_tower_benchmark.md) | 历史：旧 Time-decay TT Faiss benchmark（nlist=4096，不同机器环境；IVF nprobe=32 = 25× 提速，−0.18% Recall） |
 
 ---
 

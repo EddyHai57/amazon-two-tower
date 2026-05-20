@@ -79,16 +79,19 @@
 
 ## 工程验证
 
-### Faiss ANN 离线检索 Benchmark（基于旧 TT checkpoint）
+### Faiss ANN 离线检索 Benchmark（Transformer TT，nlist=1024）
 
-| 方法 | 延迟 | Recall@50 vs 精确检索 |
-| --- | ---: | ---: |
-| FlatIP（exact） | 0.858 ms/user | 基准 |
-| IVF-Flat（nlist=4096，nprobe=32） | **0.034 ms/user** | **−0.18%** |
+| 方法 | 延迟 | Recall@50 | vs FlatIP |
+| --- | ---: | ---: | ---: |
+| FlatIP（exact） | 0.275 ms/user | 0.103168 | 基准 |
+| IVF-Flat nprobe=16 | 0.021 ms/user | 0.101897 | −1.23% |
+| **IVF-Flat nprobe=32（推荐）** | **0.031 ms/user** | **0.102749** | **−0.41%** |
+| IVF-Flat nprobe=64 | 0.050 ms/user | 0.103102 | −0.06% |
+| HNSW ef=64 | 0.028 ms/user | 0.102923 | −0.24% |
 
-IVF nprobe=32 = **25× 提速**，Recall 损失 0.18%。
+推荐工程点：**IVF nprobe=32**，8.8× 提速，Recall 损失 0.41%。
 
-> ⚠️ 此 benchmark 基于旧 Time-decay TT checkpoint，Transformer TT Faiss index 尚未重测。
+FlatIP 对齐验证：R@50 = 0.103168，与 canonical 0.103128 差 0.000040（相对误差 0.039%，✅ PASS）。
 
 ### Candidate Audit（新 4ch）
 

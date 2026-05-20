@@ -4,7 +4,7 @@ Project-specific instructions for `/workspace/amazon-two-tower`.
 
 This file is the primary project rule file for Codex / Claude Code when working inside this repository. If `/workspace/AGENTS.md` exists, follow it as the global rule file as well; otherwise, this file is the authoritative project-level rule file.
 
-Last updated: 2026-05-16
+Last updated: 2026-05-20
 
 ---
 
@@ -194,7 +194,7 @@ Current phase: 投递期 + 面试准备 + P1 模块升级。
 
 - Switch to 22G full Amazon Reviews dataset — **decision: do not switch, see decision_log**
 - Hard Negative Mining series — **4 experiments completed 5/13-5/14, all failed to improve, marked as future work, do not restart**
-- Transformer user tower as separate experiment — superseded by M12 self-attention plan
+- Proposing a separate "Transformer user tower experiment" — it has been implemented and is now the current neural final (Transformer TT, Recall@50=10.32%); do not re-run as a fresh experiment
 - SASRec / BERT4Rec — out of scope for this project
 - 多模态融合 — out of scope
 - 换 ranking / CTR / CVR 方向 — separate project
@@ -239,13 +239,15 @@ Do not switch dataset.
 ### Baseline & Two-Tower Evolution (full test Recall@50)
 
 ```text
-ItemCF                                    8.36%
-ID-only Two-Tower                         5.32%
-Text-enhanced (additive, frozen text)     5.46%  (+2.6% over ID-only)
-Mean Pooling user tower                   6.16%  (+15.8%)
-Text + Mean Pool τ=0.07                   6.60%  (+24.1%)
-Text + Mean Pool τ=0.15                   7.63%  (+43.5%)
-Text + Time-decay Mean Pool τ=0.15        7.83%  (+47.2%)  ← FINAL MAIN MODEL
+ItemCF                                              8.36%   (0.083570)
+ID-only Two-Tower                                   5.32%   (0.053198)
+Text-enhanced (additive, frozen text)               5.46%   (+2.6% over ID-only)
+Mean Pooling user tower                             6.16%   (+15.8%)
+Text + Mean Pool τ=0.07                             6.60%   (+24.1%)
+Text + Mean Pool τ=0.15                             7.63%   (+43.5%)
+Text + Time-decay Mean Pool τ=0.15                  7.83%   (+47.2%)  ← 历史主模型（historical）
+Text + Time-aware Transformer TT τ=0.15            10.32%   (0.103168, +94.0% vs ID-only)  ← 当前神经通路（current neural final）
+4ch valid-selected wRRF (ICF+TT+Text+Pop, k=100)  12.52%   (0.125164, +49.8% vs ItemCF)   ← 当前最终系统（current final system）
 ```
 
 ### Diagnostic Results
@@ -281,37 +283,44 @@ Semi-hard λ=0.01:                          0.107840  (+0.35%)
 
 Conclusion: marginal signal exists for semi-hard, but 4.3× training cost not justified. Bottleneck is sampling strategy, not loss weight. Marked as future work in decision_log.
 
-### Faiss Benchmark
+### Faiss Benchmark（Transformer TT，当前）
 
 ```text
-based on ID-only checkpoint, 153,977 items, dim=64
+Transformer TT checkpoint, 153,977 items, dim=64, nlist=1024
 
-Brute-force exact:    ~100ms     overlap@50 = 1.000
-Faiss FlatIP:         6-10ms     overlap@50 = 1.000
-Faiss IVF1024 np=32:  0.2ms      overlap@50 = 0.768
+FlatIP（精确）:            0.275 ms/user   Recall@50 = 0.103168
+IVF nprobe=16:             0.021 ms/user   Recall@50 = 0.101897  (−1.23%)  13.0× speedup
+IVF nprobe=32（推荐）:      0.031 ms/user   Recall@50 = 0.102749  (−0.41%)   8.8× speedup
+IVF nprobe=64:             0.050 ms/user   Recall@50 = 0.103102  (−0.06%)   5.5× speedup
+HNSW ef=64:                0.028 ms/user   Recall@50 = 0.102923  (−0.24%)   9.9× speedup
 ```
+
+推荐工程点：IVF nprobe=32，8.8× 提速，Recall 损失 −0.41%。
+
+（历史参考：旧 Time-decay TT IVF nprobe=32 = 25× speedup，−0.18% Recall；不同机器环境，绝对延迟不可直接比较）
 
 ### Important interpretation
 
 **Correct narratives**:
 
 ```text
-- ItemCF strongest overall in head bucket (>100), Two-Tower wins middle bucket (21-100)
+- ItemCF strongest in head bucket (>100) and long-tail (≤5); Two-Tower wins mid-popularity (21-100)
 - Text-enhanced shows positive signal especially on has_text=1 subset
-- Final model (+47.2% over ID-only) does not beat ItemCF total but wins in mid-popularity
+- Time-decay TT (+47.2% over ID-only) does not beat ItemCF total; Transformer TT (10.32%) beats ItemCF (8.36%) overall
+- 4ch wRRF (12.52%) beats all single-channel overall; ICF–TT Jaccard@50 = 0.040 confirms high complementarity
 - Diagnostic-driven design loop: bucket analysis → time-decay design → bucket validation
+- All results are offline evaluation (full test, 496,470 non-cold users); no online A/B
 ```
 
 **Incorrect narratives (do not use)**:
 
 ```text
-- "Two-Tower beats ItemCF overall"   — false
-- "Reached 12% Recall@50"            — false (max is 7.83%)
-- "Transformer user tower deployed"  — false (M12 is future plan)
-- "LogQ implemented"                 — false (decided not to)
-- "Hybrid retrieval deployed"        — false
-- "Online A/B latency"               — false (only offline benchmark)
-- "Synthetic million-scale"          — false (real 153,977 items)
+- "Time-decay Two-Tower beats ItemCF overall"  — false (7.83% < 8.36%)
+- "LogQ implemented"                           — false (decided not to)
+- "Hybrid retrieval deployed as online service" — false (offline wRRF, not online service)
+- "Online A/B latency"                         — false (only offline benchmark)
+- "Synthetic million-scale"                    — false (real 153,977 items)
+- "4ch wRRF beats ItemCF on every bucket"      — false (ItemCF still wins long-tail ≤5)
 ```
 
 ---
@@ -357,28 +366,35 @@ Do not describe Faiss as "user-item score database" or "model that improves Reca
 
 ---
 
-## 9. User Tower Mean Pooling Rules
+## 9. User Tower Architecture Rules
 
-### Current state (final main model)
+### 当前神经通路（current neural final）：Time-aware Transformer
 
-User tower uses time-decay weighted mean pooling:
+User tower uses a 1-layer Pre-LN TransformerEncoder with mean pooling:
 
 ```text
-user_vec = normalize(user_id_emb + time_decay_weighted_mean(history item_id_emb))
+user_vec = normalize(user_id_emb + transformer_mean_pool(history item_id_emb + pos_emb + recency_bucket_emb))
 ```
 
 Rules:
 
-- Use train history only (max length = 20)
-- Exclude current positive item during training
-- Time-decay weight: recent interactions weighted higher
-- No additional learnable parameters beyond user_id_emb and item_id_emb
+- 1-layer Pre-LN TransformerEncoder, 4 heads, FFN=256, dropout=0.1
+- Learnable positional embedding + recency bucket embedding (7 buckets)
+- Mean pool over valid positions (ignores padding)
+- max_len = 100 (train history only)
+- best_epoch = 2; early_stopping_patience = 2 is critical (lr=1e-3 collapses at epoch 3)
+- Canonical checkpoint: `outputs/text_timeaware_transformer_max100_final/checkpoints/best_model.pt`
+- Full test Recall@50 = 0.103168
+
+### 历史主模型（historical）：Time-decay Mean Pooling
+
+User tower previously used time-decay weighted mean pooling (max_len=20, decay_rate=0.8, Recall@50=0.078315). Kept for historical reference only; do not revert.
 
 ### Do not expand without explicit confirmation:
 
-- Self-attention pooling (M12, planned for 5/26 升级版)
 - Multi-interest tower
 - Session-based modeling
+- Any architecture change to the user tower
 
 ---
 
@@ -553,13 +569,31 @@ If any answer is unclear or hesitant, recommend deferring to next day.
 The repository must support the actual numbers on Eddy's resume:
 
 ```text
-Final main model:                       Text + Time-decay Mean Pool τ=0.15
-Full test Recall@50:                    7.83%
-Improvement over ID-only baseline:      +47.2%
->20 history bucket improvement:         +4.66% (time-decay vs simple)
-Faiss IVF speedup:                      25× over brute-force, 0.18% recall loss
-ItemCF baseline:                        8.36%
+ItemCF baseline:                        8.36%  (0.083570)
+ID-only Two-Tower baseline:             5.32%  (0.053198)
+
+历史主模型（historical）:
+  Model:                                Text + Time-decay Mean Pool τ=0.15
+  Full test Recall@50:                  7.83%  (0.078315)
+  Improvement over ID-only:             +47.2%
+  >20 history bucket improvement:       +4.66% (time-decay vs simple mean pool)
+
+当前神经通路（current neural final）:
+  Model:                                Text + Time-aware Transformer TT τ=0.15
+  Full test Recall@50:                  10.32%  (0.103168)
+  vs ItemCF:                            +23.5%
+  Seed robustness:                      seed42=10.31%, seed2024=10.37%, seed2025=9.62%
+  Faiss IVF nprobe=32:                  8.8× speedup, −0.41% Recall loss
+
+当前最终系统（current final system）:
+  Model:                                4ch valid-selected wRRF (ICF+TT+Text+Pop, k=100)
+  Full test Recall@50:                  12.52%  (0.125164)
+  NDCG@50:                              0.0522
+  MRR@50:                               0.0336
+  vs ItemCF:                            +49.8%
+
 Metadata sparsity handled:              38.3% items without text → has_text mask
+All metrics:                            offline full test evaluation, 496,470 non-cold users
 ```
 
 Any code change or experiment update that affects these numbers must be flagged immediately. Do not silently invalidate resume claims.

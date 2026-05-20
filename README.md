@@ -182,18 +182,28 @@ Transformer TT 相比 ID-only baseline：**+93.9%**（0.053198 → 0.103168）
 
 ## 离线检索 Benchmark（Faiss）
 
-> ⚠️ 以下 Faiss benchmark 基于旧 Time-decay Mean Pool Two-Tower checkpoint（Recall@50=0.078315）。新 Transformer Two-Tower（0.103168）的 Faiss index 尚未重新构建和测试，延迟数字不可直接用于新模型。
-
-### 历史主模型 Faiss Benchmark（Time-decay Text+MP τ=0.15，全量 test 496,470 用户）
+### 当前主模型 Faiss Benchmark（Transformer Two-Tower，全量 test 496,470 用户）
 
 | 方法 | 平均延迟 | 吞吐量 | Recall@50 | vs FlatIP |
 | --- | ---: | ---: | ---: | ---: |
-| Faiss FlatIP（exact） | 0.858 ms/user | 1,165 users/s | **0.078315** | 基准 |
-| Faiss IVF-Flat（nlist=4096，nprobe=32） | **0.034 ms/user** | **29,114 users/s** | 0.078172 | −0.18% |
+| Faiss FlatIP（exact） | 0.275 ms/user | 3,632 users/s | **0.103168** | 基准 |
+| Faiss IVF-Flat（nlist=1024，nprobe=16） | **0.021 ms/user** | **47,280 users/s** | 0.101897 | −1.23% |
+| **Faiss IVF-Flat（nlist=1024，nprobe=32）** | **0.031 ms/user** | **31,907 users/s** | **0.102749** | **−0.41%** |
+| Faiss IVF-Flat（nlist=1024，nprobe=64） | 0.050 ms/user | 19,904 users/s | 0.103102 | −0.06% |
+| HNSW（M=32，efSearch=64） | 0.028 ms/user | 35,954 users/s | 0.102923 | −0.24% |
 
-IVF nprobe=32 相比 FlatIP 检索速度提升 **25.0×**，Recall@50 损失仅 0.18%。
+**推荐工程点：IVF nprobe=32**，8.8× 提速，Recall@50 损失仅 0.41%。
 
-> 注：以上为 offline retrieval benchmark，不是线上 A/B 实测延迟。本表数字来自旧版 benchmark 环境（`benchmark_faiss_ivf_time_decay_text_mean_pool.py`，nlist=4096）；新版 benchmark（`benchmark_faiss_two_tower.py`，nlist=1024，nprobe=64，FlatIP=0.253ms）在更快机器上运行，绝对延迟不可直接比较，完整结果及 nprobe sweep 见 [`docs/reports/faiss_two_tower_benchmark.md`](docs/reports/faiss_two_tower_benchmark.md)。
+> 以上为 offline retrieval benchmark，不是线上 A/B 实测延迟。完整结果及工程折中分析见 [`docs/reports/faiss_transformer_two_tower_benchmark.md`](docs/reports/faiss_transformer_two_tower_benchmark.md)。
+
+### 历史参考：旧 Time-decay TT Faiss Benchmark（nlist=4096，不同机器环境）
+
+| 方法 | 平均延迟 | Recall@50 | vs FlatIP |
+| --- | ---: | ---: | ---: |
+| Faiss FlatIP（exact） | 0.858 ms/user | 0.078315 | 基准 |
+| Faiss IVF-Flat（nlist=4096，nprobe=32） | 0.034 ms/user | 0.078172 | −0.18% |
+
+> 两套 benchmark 机器环境不同，绝对延迟不可直接比较。完整历史结果见 [`docs/reports/faiss_two_tower_benchmark.md`](docs/reports/faiss_two_tower_benchmark.md)。
 
 ### ID-only Checkpoint Faiss 工程化验证（153,977 items，dim=64）
 
@@ -402,7 +412,16 @@ HF_HOME=/workspace/.hf_home HF_DATASETS_CACHE=/workspace/.hf_home/datasets \
   --config configs/preprocess_movies_tv_5core.yaml
 ```
 
-### 3. 训练最终主模型（Text + Time-decay Mean Pooling τ=0.15）
+### 3. 训练当前神经通路（Text + Time-aware Transformer TT τ=0.15）
+
+```bash
+# 当前最终神经通路：Transformer TT（canonical run，best_epoch=2）
+.venv/bin/python scripts/train_transformer_maxlen100_smoke.py \
+  --config configs/two_tower_movies_tv_5core_text_timeaware_transformer_max100_final.yaml \
+  2>&1 | tee logs/transformer_maxlen100_final.log
+```
+
+（历史参考：旧 Time-decay Mean Pool 主模型）
 
 ```bash
 .venv/bin/python scripts/train_text_time_decay_mean_pool_two_tower_smoke.py \
@@ -413,6 +432,14 @@ HF_HOME=/workspace/.hf_home HF_DATASETS_CACHE=/workspace/.hf_home/datasets \
 ### 4. Full valid/test offline evaluation
 
 ```bash
+# 当前神经通路（Transformer TT）
+.venv/bin/python scripts/train_transformer_maxlen100_smoke.py \
+  --config configs/two_tower_movies_tv_5core_text_timeaware_transformer_max100_final.yaml \
+  --eval_only --full_eval \
+  --checkpoint outputs/text_timeaware_transformer_max100_final/checkpoints/best_model.pt \
+  --eval_output_dir outputs/transformer_maxlen100_full_eval
+
+# 历史参考（Time-decay TT）
 .venv/bin/python scripts/train_text_time_decay_mean_pool_two_tower_smoke.py \
   --config configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml \
   --eval_only --full_eval \
@@ -420,18 +447,17 @@ HF_HOME=/workspace/.hf_home HF_DATASETS_CACHE=/workspace/.hf_home/datasets \
   --eval_output_dir outputs/text_time_decay_mean_pool_20ep_full_eval
 ```
 
-### 5. Faiss offline retrieval benchmark（最终主模型）
+### 5. Faiss offline retrieval benchmark（当前神经通路）
 
 ```bash
-# 综合版（推荐，含 nprobe sweep、top-200 recall、overlap@50 对比）
+# 当前：Transformer TT benchmark（nlist=1024，含 IVF/HNSW sweep）
+.venv/bin/python scripts/benchmark_faiss_transformer_two_tower.py \
+  2>&1 | tee logs/faiss_transformer_two_tower_benchmark.log
+
+# 历史参考：旧 Time-decay TT benchmark（nlist=4096）
 .venv/bin/python scripts/benchmark_faiss_two_tower.py \
   --config configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml \
   2>&1 | tee logs/faiss_two_tower_benchmark.log
-
-# 旧版单配置 benchmark（nlist=4096，结果见主表）
-.venv/bin/python scripts/benchmark_faiss_ivf_time_decay_text_mean_pool.py \
-  --config configs/two_tower_movies_tv_5core_text_time_decay_mean_pool_20epoch.yaml \
-  2>&1 | tee logs/faiss_ivf_time_decay_text_mean_pool.log
 ```
 
 ### 6. 多路召回融合
@@ -550,7 +576,8 @@ amazon-two-tower/
 | [multichannel_transformer_final_eval.md](docs/reports/multichannel_transformer_final_eval.md) | 当前最终系统完整报告（4ch Transformer，valid sweep，candidate audit） |
 | [transformer_user_tower_investigation.md](docs/reports/transformer_user_tower_investigation.md) | Transformer user tower 全调研链路（稳定性、ablation、seed、canonical run） |
 | [multichannel_valid_selected_eval.md](docs/reports/multichannel_valid_selected_eval.md) | 历史 4ch valid-selected 报告（旧 Time-decay TT 通路） |
-| [faiss_two_tower_benchmark.md](docs/reports/faiss_two_tower_benchmark.md) | Faiss ANN 工程验证（nprobe sweep，基于旧 TT checkpoint） |
+| [faiss_transformer_two_tower_benchmark.md](docs/reports/faiss_transformer_two_tower_benchmark.md) | **当前**：Transformer TT Faiss benchmark，IVF nprobe=32 推荐（8.8×提速，−0.41% Recall） |
+| [faiss_two_tower_benchmark.md](docs/reports/faiss_two_tower_benchmark.md) | 历史：旧 Time-decay TT Faiss benchmark（nlist=4096，不同机器环境） |
 | [multichannel_contribution_analysis.md](docs/reports/multichannel_contribution_analysis.md) | 各通路命中归因（Jaccard，独占命中，得分占比） |
 | [multichannel_candidate_persistence_audit.md](docs/reports/multichannel_candidate_persistence_audit.md) | 候选集持久化与 RRF rebuild 一致性审计 |
 
