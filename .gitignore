@@ -1,23 +1,36 @@
-data/
-logs/
-!data/
-!logs/
-data/*
-logs/*
+# Python / env
+.venv/
 __pycache__/
 *.pyc
-.env
+.ipynb_checkpoints/
+
+# Data
+data/
+!data/.gitkeep
+data/processed/
+data/raw/
+
+# Outputs / logs
+outputs/
+logs/
+*.log
+
+# Model artifacts
 *.pt
 *.pth
-*.bin
-*.pkl
+*.ckpt
+*.npy
+*.npz
 *.parquet
-outputs/*.pkl
-outputs/*.parquet
-outputs/*.npy
-outputs/*.npz
-!outputs/*.md
-!outputs/.gitkeep
-!data/.gitkeep
-!logs/.gitkeep
-.venv/
+
+# Cache
+.cache/
+.hf_home/
+wandb/
+runs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

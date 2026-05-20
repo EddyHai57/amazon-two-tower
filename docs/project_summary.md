@@ -1,0 +1,145 @@
+# 项目叙述摘要（面试 / 简历用）
+
+> 本文件为面试口头表述和简历定位的参考文本。所有数字均来自 offline evaluation，不代表线上 A/B 效果。
+
+---
+
+## 一句话定位
+
+基于 Amazon Reviews 2023（Movies\_and\_TV）的离线多路召回实验系统：从 ID-only Two-Tower 出发，迭代演进至 time-aware Transformer Two-Tower，并通过 valid-selected Weighted RRF 将四路召回融合，full test Recall@50 达到 12.5%，相比 ItemCF 单路 +49.8%（offline eval）。
+
+---
+
+## 数据与评估口径
+
+| 字段 | 值 |
+| --- | --- |
+| 数据集 | Amazon Reviews 2023 — Movies\_and\_TV 5-core |
+| 用户 / 物品 / 交互 | 497,449 / 153,977 / 5,314,336 |
+| 评估方式 | 时序 leave-one-out，严格 train+valid seen-item mask |
+| 测试集 | 496,470 名非冷启动用户 |
+| 主要指标 | full test Recall@50 |
+| 所有结论 | offline evaluation，非线上 A/B |
+
+---
+
+## 模型演进（4 个阶段）
+
+### 阶段 1：ID-only Two-Tower（baseline）
+
+- 用户塔：user\_id embedding
+- 物品塔：item\_id embedding
+- 结果：full test Recall@50 = **5.32%**
+- 目的：建立纯 CF 基准，与 ItemCF（8.36%）对比
+
+### 阶段 2：Text + Mean Pool Two-Tower
+
+- 物品塔：item\_id + text\_proj（sentence-transformer 384→64），has\_text mask（61.7% items 有文本）
+- 用户塔：user\_id + history item-id embeddings mean pool
+- 逐步引入时间衰减加权（decay\_rate=0.8），最近行为权重更高
+- 最终 Time-decay 版：full test Recall@50 = **7.83%**（+47.2% vs ID-only）
+- 诊断发现：在 6–20 和 21–100 热度桶上超过 ItemCF；头部（>100）和长尾（≤5）ItemCF 仍更强
+
+### 阶段 3：Time-aware Transformer Two-Tower
+
+- 用户塔升级：1-layer Pre-LN TransformerEncoder，learnable positional + recency bucket(7 buckets) embedding，mean pool over valid positions，max\_len=100
+- 发现训练不稳定（epoch 3 起坍塌），确立 best\_epoch=2、early\_stopping\_patience=2 为关键超参
+- 基于 valid set 进行 stability sweep → max\_len ablation → seed 鲁棒性验证 → canonical run
+- canonical full test Recall@50 = **10.32%**（+31.7% vs 历史 Time-decay TT，两次独立运行差 0.00004）
+- Seed 鲁棒性：seed42=10.31%，seed2024=10.37%，seed2025=9.62%（mean=10.10%，std=0.34%）
+
+### 阶段 4：四路 Weighted RRF 融合
+
+- 四路召回：ItemCF + Transformer TT + Text Semantic + Popularity Fallback
+- 融合：Weighted RRF，score = Σ w/(k+rank)
+- 权重选择：valid set 60-config Pareto sweep（k×text\_w×pop\_w）→ 选出 frozen config → test 仅运行一次
+- Pareto winner：k=100，ICF=1.0，TT=1.0，Text=0.3，Pop=0.5
+- Full test Recall@50 = **12.52%**，NDCG@50=0.0522，MRR@50=0.0336，相比 ItemCF **+49.8%**
+
+---
+
+## 最终系统结果表
+
+| 系统 | Recall@50 | NDCG@50 | MRR@50 |
+| --- | ---: | ---: | ---: |
+| ItemCF（单路） | 0.083570 | 0.036254 | 0.023999 |
+| Transformer TT（单路） | 0.103168 | 0.040087 | 0.024439 |
+| **4ch valid-selected RRF（最终）** | **0.125164** | **0.052179** | **0.033618** |
+
+### 热度桶 Recall@50（4ch valid-selected）
+
+| 热度桶 | Test targets | 旧 4ch（历史） | **新 4ch（当前）** |
+| --- | ---: | ---: | ---: |
+| ≤5（长尾） | 35,045 | 0.045142 | 0.044429 |
+| 6–20 | 87,067 | 0.066167 | 0.069062 |
+| 21–100 | 161,718 | 0.085952 | 0.097361 |
+| >100（头部） | 212,640 | 0.144728 | 0.182586 |
+
+---
+
+## 工程验证
+
+### Faiss ANN 离线检索 Benchmark（基于旧 TT checkpoint）
+
+| 方法 | 延迟 | Recall@50 vs 精确检索 |
+| --- | ---: | ---: |
+| FlatIP（exact） | 0.858 ms/user | 基准 |
+| IVF-Flat（nlist=4096，nprobe=32） | **0.034 ms/user** | **−0.18%** |
+
+IVF nprobe=32 = **25× 提速**，Recall 损失 0.18%。
+
+> ⚠️ 此 benchmark 基于旧 Time-decay TT checkpoint，Transformer TT Faiss index 尚未重测。
+
+### Candidate Audit（新 4ch）
+
+- ICF–TT Jaccard@50 = 0.040（通路高度互补，平均约 3.5 个交集 item）
+- TT 通路独占命中 @200 = 9,212 users，为四路中最高
+- RRF rebuild Recall@50 = 0.125164（与 frozen test 精确对齐，验证候选集无污染）
+
+---
+
+## 可信度与风险边界
+
+### 已通过的验证（14 项 leakage audit 全通过）
+
+- 严格时序 split，valid/test seen mask 正确区分
+- ItemCF、Popularity、Text embedding 均只使用 train split
+- valid-selected 权重选择不接触 test label
+- RRF 只使用 rank 信息，无分数泄漏
+- Transformer canonical run 两次独立执行差值 = 0.00004
+
+### 已识别的风险
+
+1. **Seed sensitivity**：std=0.34%，最差 seed（seed2025）= 9.62%，不足 10%。所有 seed 均高于历史 7.83%，但建议面试中主动披露"非所有 seed 稳定在 10% 以上"。
+2. **Early stopping 依赖**：best\_epoch 固定在 epoch 2，去掉 early\_stopping\_patience=2 后模型坍塌。模型对 lr 和训练时长敏感。
+3. **>20 history bucket**：仅 33,442 用户（6.7%），Transformer 增益主要集中在头部热度桶，中长尾提升较小。
+4. **Offline 只**：所有指标为 offline evaluation，avg\_pop 增加不等于用户满意度下降，无 A/B 验证。
+5. **Faiss 与新 TT 的兼容性**：Transformer TT Faiss index 尚未重测，旧 25× speedup 数字不可直接用于新模型。
+
+---
+
+## 面试常见问题参考答案
+
+**Q: 为什么 Transformer TT 比 Time-decay Mean Pool 好？**
+
+主要是架构改进而非历史长度。max\_len ablation 显示，max\_len=20→100 仅带来 +0.0019 的提升，而 Transformer 架构本身（learnable positional + recency bucket + self-attention）相比 mean pool 带来约 +0.025 的提升（10.32% vs 7.83%）。
+
+**Q: 为什么选 valid-selected 而不是 test-tuned 权重？**
+
+使用 test label 来选权重会导致 test-tuning 问题（overfitting to test distribution）。valid-selected 方法在 valid set 上跑 60 个 config 的 Pareto sweep，选出 frozen config 后 test 仅运行一次，保证了实验的可信度。
+
+**Q: 为什么不用 online A/B？**
+
+这是离线研究项目，目标是复现并理解 Two-Tower 召回架构的迭代路径，为面试准备。离线指标能反映模型学到的 pattern，但 online A/B 需要真实流量环境。
+
+**Q: seed 鲁棒性怎么样？**
+
+3 个 seed（42，2024，2025）结果：10.31%，10.37%，9.62%。均高于历史 Time-decay TT（7.83%），但 seed2025 不足 10%，std=0.34%。这反映模型对初始化和训练时长有一定敏感性，best\_epoch 对 lr=1e-3 固定在 epoch 2 是关键约束。
+
+**Q: ItemCF 和 Two-Tower 谁更好？**
+
+各有优势。ItemCF 在头部（>100 交互）和长尾（≤5）item 上更强，Two-Tower 在中等热度（21-100）和文本丰富的 item 上更强。融合（wRRF）利用两路的互补性，Jaccard@50 = 0.040，提升明显（+49.8% vs ItemCF）。
+
+---
+
+> ⚠️ 本文件仅供面试准备参考。使用前请对照 `docs/reports/final_offline_trust_audit.md` 确认数字的最新状态。

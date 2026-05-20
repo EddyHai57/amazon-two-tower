@@ -1,6 +1,6 @@
 # Amazon Two-Tower Retrieval
 
-面向工业推荐召回流程的 Two-Tower 离线实验系统，基于 Amazon Reviews 2023（Movies\_and\_TV）构建，覆盖数据预处理、ID-only 基线、用户塔 Mean Pooling 升级、物品侧文本增强、温度超参扫描，以及离线 Faiss 检索 benchmark 的完整实验链路。
+面向工业推荐召回流程的离线多路召回实验系统，基于 Amazon Reviews 2023（Movies\_and\_TV）构建。系统包含 ItemCF、时序 Transformer Two-Tower、文本语义、热门度兜底四路召回通路，使用 valid-selected Weighted RRF 融合，覆盖了模型演进链路、Faiss ANN 工程验证和 14 项 leakage audit。
 
 ---
 
@@ -11,7 +11,7 @@
 - 从 ID-only baseline 出发，与传统 ItemCF 正面对比
 - 逐步引入 item 文本特征（sentence-transformer frozen embeddings）和用户历史 mean pooling
 - 通过温度系数调优、Faiss 索引加速、流行度分桶诊断，揭示不同方法在头部 / 中段 / 长尾 item 上的差异化优势
-- 最终架构相比 ID-only baseline 在 full test Recall@50 上提升 **47.2%**
+- 神经检索通路从 Time-decay Mean Pool Two-Tower（7.83%）升级至 time-aware Transformer Two-Tower（10.3%，+31.7%）；valid-selected 四路 RRF 系统 full test Recall@50 = **12.5%**，相比 ItemCF +49.8%
 
 **核心约束**：
 - 5-core clean split，严格 leave-one-out 时序划分，无时间泄漏
@@ -44,12 +44,14 @@ ID-only Two-Tower
 └── Text + Mean Pooling（item text + user history mean pooling）
     └── Temperature Sweep（τ = 0.05 / 0.07 / 0.10 / 0.15 / 0.20 / 0.30）
         └── τ = 0.15 → 20epoch
-            └── Time-decay Weighted Mean Pooling → 20epoch → 当前最终主模型
+            └── Time-decay Weighted Mean Pooling → 20epoch → 历史主模型（已升级）
+                └── Time-aware Transformer user tower → max_len=100 → 当前神经召回通路
+                    └── 4-channel wRRF（ICF + Transformer TT + Text + Pop）→ 当前最终系统
 ```
 
 ---
 
-## 最终主模型架构
+## 历史主模型架构（Time-decay Mean Pooling，已升级）
 
 **Text + Time-decay Mean Pooling Two-Tower，τ = 0.15**
 
@@ -86,6 +88,36 @@ loss = softmax cross entropy（in-batch negatives） / temperature τ
 
 ---
 
+## 当前神经召回通路架构（Time-aware Transformer Two-Tower）
+
+**1-layer Pre-LN TransformerEncoder，τ = 0.15，max\_len=100**
+
+### 用户塔
+
+```
+user_vec = mean_pool( TransformerEncoder( item_id_emb(h) + pos_emb(pos) + recency_emb(bucket(h)) ) )
+```
+
+- `item_id embedding`：dim=64，随机初始化
+- `positional embedding`：learnable，max\_len=100
+- `recency bucket embedding`：7 个桶（最近 1/2/3/5/10/20/100+ 条），learnable
+- `TransformerEncoder`：1 layer，4 heads，FFN=256，Pre-LN，dropout=0.1
+- mean pool over valid（非 padding）positions
+- 总参数：约 41.8M
+
+### 物品塔
+
+与历史版本相同（item\_id\_emb + text\_proj，additive fusion）。
+
+### 训练特性
+
+- 最佳 checkpoint 固定在 epoch 2（lr=1e-3 下 epoch 3 开始坍塌，early\_stopping\_patience=2 关键）
+- Seed 鲁棒性：seed42=10.31%，seed2024=10.37%，seed2025=9.62%（mean=10.10%，std=0.34%）
+- 所有 3 个 seed 均高于历史主模型（7.83%），但非全部 ≥ 10%
+- 决策和 checkpoint 均基于 valid set，未使用 test set 调参
+
+---
+
 ## 核心实验结果
 
 ### Full Offline Evaluation（所有非冷启动用户）
@@ -97,13 +129,14 @@ loss = softmax cross entropy（in-batch negatives） / temperature τ
 | Text-enhanced（additive，20ep） | 0.093940 | 0.054561 | — | — |
 | Mean Pooling Two-Tower（20ep） | 0.096309 | 0.061601 | 0.025176 | 0.016047 |
 | Text + Mean Pooling τ=0.07（20ep） | 0.099628 | 0.066042 | 0.026751 | 0.016922 |
-| **Text + Time-decay Mean Pooling τ=0.15（20ep）** | **0.122626** | **0.078315** | **0.030862** | **0.019036** |
+| Text + Time-decay Mean Pooling τ=0.15（20ep，历史） | 0.122626 | 0.078315 | 0.030862 | 0.019036 |
+| **Time-aware Transformer Two-Tower（ep2, max_len=100）** | **0.126653** | **0.103168** | **0.040087** | **0.024439** |
+| **4-channel valid-selected RRF（ICF + Transformer TT + Text + Pop）** | — | **0.125164** | **0.052179** | **0.033618** |
 
-相比 ID-only baseline：
-- Full test Recall@50：**+47.2%**（0.053198 → 0.078315）
-- Full valid Recall@50：**+33.1%**（0.092144 → 0.122626）
+Transformer TT 相比 ID-only baseline：**+93.9%**（0.053198 → 0.103168）  
+4-channel RRF 相比 ItemCF 单路：**+49.8%**（0.083570 → 0.125164）
 
-> 注：ItemCF full test Recall@50 = 0.083570，高于当前最终主模型 0.078315，差距主要集中在头部物品（train 交互数 >100）。详见下方 Bucket Evaluation。
+> 注：Time-decay TT（0.078315）为历史主模型；当前神经召回通路为 Transformer TT（0.103168），当前最终系统为四路融合（0.125164，offline eval）。ItemCF full test Recall@50 = 0.083570。详见 [trust audit](docs/reports/final_offline_trust_audit.md)。
 
 ### Temperature Ablation（5epoch limited valid，eval\_max\_users=50K）
 
@@ -149,7 +182,9 @@ loss = softmax cross entropy（in-batch negatives） / temperature τ
 
 ## 离线检索 Benchmark（Faiss）
 
-### 最终主模型 Faiss Benchmark（Time-decay Text+MP τ=0.15，全量 test 496,470 用户）
+> ⚠️ 以下 Faiss benchmark 基于旧 Time-decay Mean Pool Two-Tower checkpoint（Recall@50=0.078315）。新 Transformer Two-Tower（0.103168）的 Faiss index 尚未重新构建和测试，延迟数字不可直接用于新模型。
+
+### 历史主模型 Faiss Benchmark（Time-decay Text+MP τ=0.15，全量 test 496,470 用户）
 
 | 方法 | 平均延迟 | 吞吐量 | Recall@50 | vs FlatIP |
 | --- | ---: | ---: | ---: | ---: |
@@ -172,33 +207,46 @@ IVF nprobe=32 相比 FlatIP 检索速度提升 **25.0×**，Recall@50 损失仅 
 
 ## 多路召回融合（Multi-channel Retrieval Fusion）
 
-### 四通路平衡加权 RRF（V3，主要结论）
+### 当前最终系统：Transformer 4-Channel valid-selected RRF
 
-**通路组合**：ItemCF + Text+Time-decay Mean Pool Two-Tower + Text Semantic + Popularity Fallback  
+**通路组合**：ItemCF + Time-aware Transformer Two-Tower + Text Semantic + Popularity Fallback  
 **融合方式**：Weighted RRF，weights = [ICF=1.0, TT=1.0, Text=0.3, Pop=0.5]，k=100  
-**权重选择**：valid set 60-config grid search（k ∈ {30,60,100} × text_w ∈ {0,0.1,0.3,0.5} × pop_w ∈ {0,0.1,0.2,0.3,0.5}）→ Pareto 规则选出 frozen config → **test set 仅运行一次（不参与权重选择）**
+**权重选择**：valid set 60-config Pareto sweep → frozen config → **test set 仅运行一次**
+
+| 系统 | Recall@50 | NDCG@50 | MRR@50 | avg_pop |
+| --- | ---: | ---: | ---: | ---: |
+| ItemCF（单路） | 0.083570 | 0.036254 | 0.023999 | — |
+| Transformer TT（单路） | 0.103168 | 0.040087 | 0.024439 | — |
+| 2ch RRF k=60（ICF + Transformer TT） | 0.117608 | — | — | — |
+| **4ch valid-selected（当前最终）** | **0.125164** | **0.052179** | **0.033618** | **495.5** |
+
+相比 ItemCF 单路：0.083570 → 0.125164，**+49.8% relative**
+
+#### 按热度桶 Recall@50（Full Test 496,470 users）
+
+| Train 交互数桶 | Test targets | 2ch RRF | **4ch valid-selected（当前）** | Δ |
+| --- | ---: | ---: | ---: | ---: |
+| ≤5（长尾） | 35,045 | 0.044029\* | 0.044429 | +0.000400 |
+| 6–20 | 87,067 | 0.064008\* | 0.069062 | +0.005054 |
+| 21–100 | 161,718 | 0.085018\* | 0.097361 | +0.012343 |
+| >100（头部） | 212,640 | 0.127714\* | 0.182586 | +0.054872 |
+
+\* 2ch RRF 此处为历史参考（基于旧 Time-decay TT），非与新 4ch 严格 ablation。
+
+---
+
+### 历史参考：四通路平衡加权 RRF（V3，基于旧 Time-decay TT）
+
+**通路组合**：ItemCF + Text+Time-decay Mean Pool Two-Tower + Text Semantic + Popularity Fallback
 
 | 系统 | Recall@50 | avg_rec_popularity | vs v1 两路 RRF |
 | --- | ---: | ---: | ---: |
-| ItemCF（单路） | 0.083570 | — | 基准 |
-| Two-Tower（单路） | 0.078315 | — | — |
-| v1：2ch RRF k=60（ICF + TT） | 0.096727 | 265 | 基准 |
-| **v3：4ch wRRF valid-selected（主结论）** | **0.104776** | **461.8（1.7×）** | **+8.3%** |
+| v1：2ch RRF k=60（ICF + 旧 TT） | 0.096727 | 265 | 基准 |
+| v3：4ch wRRF valid-selected（历史） | 0.104776 | 461.8（1.7×） | +8.3% |
 
-相比 ItemCF 单路：0.083570 → 0.104776，**+25.4% relative**
+相比 ItemCF 单路：0.083570 → 0.104776，+25.4% relative
 
 > 早期 test-sweep 参考（仅诊断用，不作为主结论）：同一权重组合（text=0.3, pop=0.5）在 k=60 时 Recall@50=0.103384，valid-selected k=100 更高（+0.001392），确认权重选择无 test-tuning 问题。
-
-#### V3 按热度桶 Recall@50（Full Test 496,470 users）
-
-| Train 交互数桶 | Test targets | v1 2ch RRF | **v3 4ch wRRF（valid-selected）** |
-| --- | ---: | ---: | ---: |
-| ≤5（长尾） | 35,045 | 0.044029 | **0.045142** |
-| 6–20 | 87,067 | 0.064008 | **0.066167** |
-| 21–100 | 161,718 | 0.085018 | **0.085952** |
-| >100（头部） | 212,640 | 0.127714 | **0.144728** |
-
-V3 在所有热度桶上均超过 v1 两路 RRF。
 
 ---
 
@@ -438,7 +486,9 @@ amazon-two-tower/
 │   ├── multichannel_itemcf_twotower_v1.yaml              # v1 两路融合
 │   ├── multichannel_v2.yaml                              # v2 四路融合（诊断）
 │   ├── multichannel_v3_balanced.yaml                     # v3 四路平衡加权 RRF
-│   └── multichannel_valid_selected.yaml                  # valid-selected 验证 ★
+│   ├── multichannel_valid_selected.yaml                  # v3 valid-selected（历史）
+│   ├── two_tower_movies_tv_5core_text_timeaware_transformer_max100_final.yaml  # Transformer TT ★
+│   └── multichannel_transformer_final.yaml               # 当前最终系统配置 ★
 ├── scripts/
 │   ├── preprocess_amazon.py                              # 数据预处理
 │   ├── build_item_text_embeddings.py                     # 生成 item text embeddings
@@ -449,7 +499,9 @@ amazon-two-tower/
 │   ├── run_multichannel_retrieval.py                     # v1 融合（ItemCF + Two-Tower）
 │   ├── run_multichannel_retrieval_v2.py                  # v2 四路融合诊断
 │   ├── run_multichannel_retrieval_v3.py                  # v3 四路平衡加权 RRF
-│   ├── run_multichannel_valid_selected.py                # valid-selected 验证流程 ★
+│   ├── run_multichannel_valid_selected.py                # v3 valid-selected 验证流程（历史）
+│   ├── train_transformer_maxlen100_smoke.py              # Transformer TT 训练（含 investigation 入口）★
+│   ├── run_multichannel_transformer_final.py             # 当前最终系统 5-phase eval ★
 │   ├── train_text_mean_pool_hard_negative_smoke.py       # Text-based HNM smoke
 │   ├── train_text_mean_pool_model_hard_negative_smoke.py # Model-based HNM smoke
 │   ├── train_text_mean_pool_semi_hard_negative_smoke.py  # Semi-hard HNM λ=0.03 smoke
@@ -470,6 +522,39 @@ amazon-two-tower/
 ├── outputs/                          # gitignore（checkpoints / embeddings 不提交）
 └── logs/                             # gitignore
 ```
+
+---
+
+## 离线可信度审计摘要
+
+基于 `docs/reports/final_offline_trust_audit.md`（14 项 leakage 检查，全部通过）：
+
+| 结论对象 | Recall@50 | 可信度 |
+| --- | ---: | --- |
+| Time-decay TT（历史） | 0.078315 | 高（多次复现，两次独立运行差值 0） |
+| Transformer TT（当前神经通路） | 0.103168 | 高（两次独立运行差 0.00004，均高于历史） |
+| 4ch valid-selected（当前最终） | 0.125164 | 高（valid-selected 方法，test 仅运行一次，rebuild 对齐） |
+
+**风险披露**：
+- Seed sensitivity：std=0.34%，min seed = 9.62%（seed2025）；所有 seed 均高于历史 7.83%，但非全 ≥10%
+- Early stopping：best\_epoch 固定在 epoch 2，训练稳定性依赖 early\_stopping\_patience=2
+- 所有结论为 offline evaluation，非线上 A/B；avg\_pop 增减不等于用户满意度
+
+---
+
+## 文档索引
+
+| 报告 | 说明 |
+| --- | --- |
+| [final_offline_trust_audit.md](docs/reports/final_offline_trust_audit.md) | 14 项 leakage 审计、决策追溯、test-tuning 风险、seed 鲁棒性、最终信任判断 |
+| [multichannel_transformer_final_eval.md](docs/reports/multichannel_transformer_final_eval.md) | 当前最终系统完整报告（4ch Transformer，valid sweep，candidate audit） |
+| [transformer_user_tower_investigation.md](docs/reports/transformer_user_tower_investigation.md) | Transformer user tower 全调研链路（稳定性、ablation、seed、canonical run） |
+| [multichannel_valid_selected_eval.md](docs/reports/multichannel_valid_selected_eval.md) | 历史 4ch valid-selected 报告（旧 Time-decay TT 通路） |
+| [faiss_two_tower_benchmark.md](docs/reports/faiss_two_tower_benchmark.md) | Faiss ANN 工程验证（nprobe sweep，基于旧 TT checkpoint） |
+| [multichannel_contribution_analysis.md](docs/reports/multichannel_contribution_analysis.md) | 各通路命中归因（Jaccard，独占命中，得分占比） |
+| [multichannel_candidate_persistence_audit.md](docs/reports/multichannel_candidate_persistence_audit.md) | 候选集持久化与 RRF rebuild 一致性审计 |
+
+完整报告索引见 [`docs/reports/README.md`](docs/reports/README.md)。
 
 ---
 
