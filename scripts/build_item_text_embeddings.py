@@ -22,6 +22,15 @@ def parse_args():
     p.add_argument("--config_name", default="raw_meta_Movies_and_TV")
     p.add_argument("--model_name", default="sentence-transformers/all-MiniLM-L6-v2")
     p.add_argument(
+        "--prompt",
+        default=None,
+        help=(
+            "Optional instruction prepended to every item text before encoding "
+            "(e.g. Qwen3-Embedding retrieval instruction). Omit for plain encoding. "
+            "Recorded in meta.json for reproducibility."
+        ),
+    )
+    p.add_argument(
         "--item2id_path",
         default="data/processed/movies_tv_5core/item2id.json",
     )
@@ -191,17 +200,25 @@ def main():
     print(f"      device: {device}")
 
     model = SentenceTransformer(args.model_name, device=device)
-    embedding_dim = model.get_embedding_dimension()
 
-    embeddings = model.encode(
-        texts,
+    encode_kwargs = dict(
         batch_size=args.batch_size,
         show_progress_bar=True,
         convert_to_numpy=True,
         normalize_embeddings=False,
     )
+    # Instruction-aware models (e.g. Qwen3-Embedding) accept a prompt that is
+    # prepended to each text. Plain models (MiniLM) leave prompt=None.
+    if args.prompt:
+        encode_kwargs["prompt"] = args.prompt
+        print(f"      using prompt: {args.prompt!r}")
+
+    embeddings = model.encode(texts, **encode_kwargs)
     embeddings = embeddings.astype(np.float32)
-    print(f"      encoded shape: {embeddings.shape}")
+    # Derive embedding_dim from the actual encoded array (robust across model
+    # wrappers; MiniLM=384, Qwen3-Embedding-0.6B=1024).
+    embedding_dim = int(embeddings.shape[1])
+    print(f"      encoded shape: {embeddings.shape}  dim={embedding_dim}")
 
     # --- Build full-size array aligned to item_idx ---
     # For smoke test (limit < total), only encode_indices rows are filled;
@@ -233,6 +250,7 @@ def main():
         "dataset_name": args.dataset_name,
         "config_name": args.config_name,
         "model_name": args.model_name,
+        "prompt": args.prompt,
         "embedding_dim": embedding_dim,
         "num_items_total": num_items_total,
         "num_items_encoded": num_items_encoded,
