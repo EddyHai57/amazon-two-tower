@@ -4,6 +4,18 @@ Project-specific instructions for `/workspace/amazon-two-tower`.
 
 This file is the primary project rule file for Codex / Claude Code when working inside this repository. If `/workspace/AGENTS.md` exists, follow it as the global rule file as well; otherwise, this file is the authoritative project-level rule file.
 
+> **【硬性读取确认协议 - 不可跳过】**
+>
+> 每次进入本项目（无论新对话、新任务、新会话）的**第一条回复**里，**必须**首行打印：
+>
+> ```text
+> amazon-two-tower codex喵开始了喵ヾ(*ΦωΦ)ツ
+> ```
+>
+> 这条规则用于确认 agent 已读取本项目规则，而不是依赖历史对话、memory 或其他仓库的规则残留。
+>
+> 不要在确认字符串前添加任何前缀。跳过时，立刻停止当前任务，重新打印确认字符串，并复述本文件中当前任务相关的关键约束后再继续。
+
 Last updated: 2026-05-16
 
 ---
@@ -513,6 +525,42 @@ known limitations
 what was not done
 next recommended step
 ```
+
+---
+
+## 13.5 Local / GitHub / Server Workflow Discipline
+
+GitHub is the single source of truth for code, configs, and documentation.
+
+The canonical edit location is the local Windows working tree:
+
+```text
+D:\ANU\project\amazon-two-tower
+```
+
+Synchronization direction:
+
+```text
+local Windows -> GitHub -> server
+```
+
+Rules:
+
+- Edit `src/`, `scripts/`, `configs/`, `docs/`, `AGENTS.md`, `CLAUDE.md`, and `README.md` only in the local Windows working tree.
+- The server is a read-only code mirror. It may run `git pull`, training, evaluation, and artifact generation.
+- Do not edit source code, configs, or documentation directly on the server.
+- Do not push from the server. All commits and pushes must originate from the local Windows working tree after Eddy explicitly confirms them.
+- Before pulling on the server, run `git status --short --branch`. If tracked or untracked server-side changes exist, stop and report them instead of overwriting them.
+- Server-only files, such as machine-specific configs or temporary launch scripts, must stay outside the repository directory.
+- Never commit or upload datasets, checkpoints, logs, outputs, SSH keys, tokens, or credentials.
+
+The current Vast.ai server uses an HTTPS `origin` so it can pull this public repository without a GitHub private key:
+
+```text
+https://github.com/EddyHai57/amazon-two-tower.git
+```
+
+Vast.ai instances may be replaced or expose a different SSH host and port. Verify the active SSH command from the Vast.ai instance page before connecting. Do not copy a GitHub private key to the server unless Eddy explicitly approves a different access model.
 
 ---
 
