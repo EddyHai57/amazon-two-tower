@@ -141,19 +141,90 @@ Top50 热门商品占比不能接近 alpha=1.0 的 81.99%
 catalog coverage 不能明显塌缩
 ```
 
-## 8. Interview Answer
+### 7.4 Completed limited-valid results
+
+| Alpha | Recall@50 | avg_pop | median_pop | P90 pop | coverage | Top50 `>100` share |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.00 | 0.124460 | 113.78 | 28 | 219 | 141547 | 20.97% |
+| 0.25 | 0.163560 | 270.17 | 68 | 587 | 128908 | 40.13% |
+| 0.50 | 0.187340 | 516.40 | 149 | 1263 | 88259 | 60.56% |
+| 0.75 | 0.189520 | 735.41 | 221 | 2068 | 57240 | 73.50% |
+| 1.00 | 0.179980 | 915.66 | 290 | 2844 | 40621 | 81.83% |
+
+Target item popularity bucket Recall@50：
+
+| Alpha | `1-5` | `6-20` | `21-100` | `>100` |
+|---:|---:|---:|---:|---:|
+| 0.00 | 0.032455 | 0.072903 | 0.114014 | 0.160671 |
+| 0.25 | 0.035128 | 0.069072 | 0.128784 | 0.236509 |
+| 0.50 | 0.013364 | 0.048808 | 0.125305 | 0.300559 |
+| 0.75 | 0.005346 | 0.034968 | 0.107300 | 0.324005 |
+| 1.00 | 0.001527 | 0.020759 | 0.084351 | 0.325052 |
+
+### 7.5 Candidate interpretation
+
+`alpha=0.25` 是当前离散网格中的 Pareto candidate：
+
+- Recall@50 相对 `alpha=0.00` 增加 `+0.039100`。
+- `1-5` 和 `21-100` buckets 提升。
+- `6-20` bucket 轻微回退。
+- coverage 只下降约 `8.9%`，明显小于 `alpha>=0.50`。
+- Top50 `>100` share 为 `40.13%`，仍需业务目标和 full-test multi-seed 验收。
+
+这不是 universal optimum。不同数据分布、batch size、`Q(item)` 估计方式和业务目标会改变
+最优折中点。
+
+## 8. Mechanism Notes and External References
+
+### 8.1 Correct interpretation
+
+LogQ correction 的初衷是修正 sampled softmax / in-batch negatives 中的 sampling bias，
+不是单调降低热门曝光的 rerank knob。训练阶段修改 logits 会改变 embedding learning
+dynamics；推理阶段仍使用 raw dot product，因此更强 correction 不保证更均衡的最终曝光。
+
+本项目当前使用简化估计：
+
+```python
+q(item) = train_item_frequency / total_train_interactions
+```
+
+Uber 的公开工程文章使用 batch appearance probability：
+
+```text
+Q = 1 - (1 - w)^B
+```
+
+其中 `w` 是 item 数据权重，`B` 是 batch size。两者不能直接写成完全相同。
+
+RecSys 2025 的论文进一步指出，传统 LogQ derivation 没有严格区分 positive item 总是出现
+和 negative item 被采样出现的概率，并提出 refined correction。该方向属于后续研究候选，
+本轮不继续实现。
+
+### 8.2 Primary sources
+
+- Uber Engineering: [Innovative Recommendation Applications Using Two Tower Embeddings at Uber](https://www.uber.com/en-GB/blog/innovative-recommendation-applications-using-two-tower-embeddings/)
+- RecSys 2025: [Correcting the LogQ Correction: Revisiting Sampled Softmax for Large-Scale Retrieval](https://arxiv.org/abs/2507.09331)
+- Official RecSys 2025 code: [NonameUntitled/logq](https://github.com/NonameUntitled/logq)
+- Google Research: [Mixed Negative Sampling for Learning Two-tower Neural Networks in Recommendations](https://research.google/pubs/mixed-negative-sampling-for-learning-two-tower-neural-networks-in-recommendations/)
+- Survey: [A Survey on Popularity Bias in Recommender Systems](https://arxiv.org/abs/2308.01118)
+- IPL regularization: [Popularity Debiasing from Exposure to Interaction in Collaborative Filtering](https://arxiv.org/abs/2305.05204)
+
+## 9. Interview Answer
 
 > 我实现了 train-only frequency 的 LogQ correction，用于分析 in-batch negatives 的
 > popularity sampling bias。初始 `alpha=1.0` 在三个 seed 上都显著提高总体 Recall，
 > 但 effect audit 发现增益主要来自热门商品，coverage 也明显下降，因此没有直接替换
 > 主模型。随后我把 correction 写成 `alpha * log(q)` 的受控消融，并同时检查 Recall、
-> item 热度桶和曝光覆盖率。这个过程说明 sampled-softmax 风格修正需要结合业务目标
-> 验收，不能只看一个总 Recall 数字。
+> item 热度桶和曝光覆盖率。`alpha=0.25` 是当前 smoke 的 Pareto 候选，但仍需 full-test
+> multi-seed 验收。这个过程说明 sampled-softmax 风格修正需要结合业务目标验收，不能
+> 只看一个总 Recall 数字。
 
-## 9. Evidence Files
+## 10. Evidence Files
 
 ```text
 outputs/transformer_logq_smoke/
 outputs/text_timeaware_transformer_max100_logq*_full_eval/eval_summary.json
 outputs/transformer_logq_effect_audit/audit_summary.json
+outputs/transformer_logq_alpha_smoke/
+outputs/transformer_logq_alpha_smoke_audit/
 ```

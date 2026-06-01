@@ -2833,3 +2833,24 @@ bucket 和 exposure audit。不自动进入 full train、4ch 或 Faiss。
 - popularity correction 的验收不能只看总体 Recall。
 - 必须同时检查 target item popularity buckets、曝光分布和 catalog coverage。
 - 在人工确认平衡候选前，保持 canonical、README、简历和 CLAUDE 主数字不变。
+
+### 2026-06-02 Alpha strength smoke 状态更新
+
+已完成 `alpha=0.00 / 0.25 / 0.50 / 0.75 / 1.00` 的 `3 epochs + 50K
+limited-valid` 隔离 smoke 和 exact Top50 exposure audit。
+
+| Alpha | Recall@50 | coverage | Top50 `>100` share |
+|---:|---:|---:|---:|
+| 0.00 | 0.124460 | 141547 | 20.97% |
+| 0.25 | 0.163560 | 128908 | 40.13% |
+| 0.50 | 0.187340 | 88259 | 60.56% |
+| 0.75 | 0.189520 | 57240 | 73.50% |
+| 1.00 | 0.179980 | 40621 | 81.83% |
+
+当前判断：
+
+- `alpha>=0.50` 会明显牺牲 coverage，并持续将曝光推向 head item。
+- `alpha=0.25` 是当前离散网格中的 Pareto candidate，不是已确认 canonical。
+- `alpha=0.25` 的 full-test multi-seed 尚未运行。
+- 不扩大 alpha sweep，不自动启动 full train、4ch 或 Faiss。
+- 当前状态保持 `Investigating`。
