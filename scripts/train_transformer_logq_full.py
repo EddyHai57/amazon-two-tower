@@ -17,9 +17,16 @@ import torch.nn.functional as F
 
 import train_transformer_stability_sweep as stability
 from train_transformer_logq_smoke import (
-    apply_logq_and_duplicate_mask,
-    build_log_q,
+    build_log_q_for_mode,
+    compute_sampling_loss,
+    resolve_loss_variant,
     summarize_batch_duplicates,
+)
+from transformer_sampling_losses import (
+    validate_logq_alpha,
+    validate_loss_variant,
+    validate_mns_uniform_fraction,
+    validate_q_estimator,
 )
 
 
@@ -40,10 +47,18 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate_logq_config(cfg: dict[str, Any]) -> None:
-    if cfg.get("use_logq_correction") is not True:
-        raise ValueError("use_logq_correction must be true for LogQ full candidate.")
     if cfg.get("mask_duplicate_items") is not False:
         raise ValueError("mask_duplicate_items must be false for LogQ full candidate.")
+    loss_variant = resolve_loss_variant(cfg)
+    validate_loss_variant(loss_variant)
+    if loss_variant == "infonce":
+        raise ValueError("loss_variant=infonce is a baseline, not a full sampling candidate.")
+    if loss_variant in {"old_logq", "uber_batchq", "refined_logq", "mns_refined_logq"}:
+        if cfg.get("use_logq_correction") is not True:
+            raise ValueError(f"use_logq_correction must be true for {loss_variant}.")
+    validate_q_estimator(str(cfg.get("q_estimator", "empirical_frequency")))
+    validate_logq_alpha(float(cfg.get("logq_alpha", 1.0)))
+    validate_mns_uniform_fraction(float(cfg.get("mns_uniform_fraction", 0.5)))
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -59,25 +74,25 @@ def compute_logq_loss(
     history_item_idx: torch.Tensor,
     temperature: float,
     log_q: torch.Tensor,
+    *,
+    cfg: dict[str, Any] | None = None,
+    num_items: int | None = None,
 ) -> tuple[torch.Tensor, dict[str, int | float]]:
-    raw_user, raw_item = model.raw_batch(user_idx, item_idx, history_item_idx)
-    user_emb = F.normalize(raw_user, p=2, dim=-1) if model.use_l2_norm else raw_user
-    item_emb = F.normalize(raw_item, p=2, dim=-1) if model.use_l2_norm else raw_item
-    logits = (user_emb @ item_emb.T) / temperature
-    corrected_logits = apply_logq_and_duplicate_mask(
-        logits,
+    effective_cfg = cfg or {
+        "loss_variant": "old_logq",
+        "mask_duplicate_items": False,
+        "logq_alpha": 1.0,
+    }
+    return compute_sampling_loss(
+        model,
+        user_idx,
         item_idx,
+        history_item_idx,
+        temperature,
         log_q,
-        use_logq=True,
-        mask_duplicate_items=False,
+        cfg=effective_cfg,
+        num_items=num_items or int(log_q.numel()),
     )
-    if not torch.isfinite(corrected_logits).all():
-        raise FloatingPointError("corrected logits contain nan/inf; stopping.")
-    labels = torch.arange(corrected_logits.shape[0], device=corrected_logits.device)
-    loss = F.cross_entropy(corrected_logits, labels)
-    if not torch.isfinite(loss):
-        raise FloatingPointError("loss is nan/inf; stopping.")
-    return loss, summarize_batch_duplicates(item_idx)
 
 
 def train_one_step(
@@ -88,6 +103,9 @@ def train_one_step(
     history_item_idx: torch.Tensor,
     temperature: float,
     log_q: torch.Tensor,
+    *,
+    cfg: dict[str, Any] | None = None,
+    num_items: int | None = None,
 ) -> tuple[float, dict[str, int | float]]:
     optimizer.zero_grad(set_to_none=True)
     loss, duplicate_stats = compute_logq_loss(
@@ -97,6 +115,8 @@ def train_one_step(
         history_item_idx,
         temperature,
         log_q,
+        cfg=cfg,
+        num_items=num_items,
     )
     loss.backward()
     optimizer.step()
@@ -133,6 +153,8 @@ def train_epoch(
             history_item_idx,
             temperature,
             log_q,
+            cfg=cfg,
+            num_items=int(log_q.numel()),
         )
         loss.backward()
 
@@ -199,10 +221,21 @@ def train(cfg: dict[str, Any]) -> dict[str, Any]:
     patience = int(cfg.get("early_stopping_patience", 0))
 
     train_items = np.array(bundle.train_df["item_idx"].to_numpy(dtype=np.int64), copy=True)
-    log_q = build_log_q(torch.from_numpy(train_items), num_items).to(device)
+    q_mode = str(cfg.get("q_mode", "empirical"))
+    q_estimator = str(cfg.get("q_estimator", "empirical_frequency"))
+    log_q = build_log_q_for_mode(
+        torch.from_numpy(train_items),
+        num_items,
+        q_mode,
+        int(cfg.get("q_shuffle_seed", cfg["seed"])),
+        q_estimator=q_estimator,
+        batch_size=int(cfg["batch_size"]),
+    ).to(device)
     q = log_q.exp()
     q_stats = {
         "source": "train_df.item_idx",
+        "q_mode": q_mode,
+        "q_estimator": q_estimator,
         "num_items": num_items,
         "min_q": float(q.min().item()),
         "max_q": float(q.max().item()),
@@ -305,7 +338,11 @@ def train(cfg: dict[str, Any]) -> dict[str, Any]:
 
     summary = {
         "run_label": cfg.get("run_label", ""),
-        "use_logq_correction": True,
+        "loss_variant": resolve_loss_variant(cfg),
+        "q_estimator": q_estimator,
+        "logq_alpha": float(cfg.get("logq_alpha", 1.0)),
+        "mns_uniform_fraction": float(cfg.get("mns_uniform_fraction", 0.5)),
+        "use_logq_correction": bool(cfg.get("use_logq_correction", True)),
         "mask_duplicate_items": False,
         "best_epoch": best_epoch,
         "epochs_trained": epoch,

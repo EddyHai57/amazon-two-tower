@@ -538,6 +538,15 @@ The canonical edit location is the local Windows working tree:
 D:\ANU\project\amazon-two-tower
 ```
 
+Windows local PyTorch verification interpreter:
+
+```text
+D:\tool\spyder\envs\pytorch\python.exe
+```
+
+Use this interpreter for local `py_compile`, unit tests, and PyTorch smoke checks.
+Do not assume the default `python` command has PyTorch installed.
+
 Synchronization direction:
 
 ```text

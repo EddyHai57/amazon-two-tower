@@ -14,6 +14,7 @@ Output: outputs/faiss_transformer_two_tower_benchmark/
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import logging
@@ -59,6 +60,14 @@ EXPECTED_R50 = 0.10312808   # canonical full test Recall@50, seed=42, best_epoch
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=str(CONFIG_PATH))
+    parser.add_argument("--checkpoint", default=str(CHECKPOINT_PATH))
+    parser.add_argument("--output_dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--expected_r50", type=float, default=EXPECTED_R50)
+    return parser.parse_args()
 
 def write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,12 +181,19 @@ def index_size_bytes(n: int, d: int) -> int:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    args = parse_args()
+    config_path = Path(args.config)
+    checkpoint_path = Path(args.checkpoint)
+    output_dir = Path(args.output_dir)
+    expected_r50 = float(args.expected_r50)
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise FileExistsError(f"Refusing to overwrite non-empty output_dir: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
     faiss.omp_set_num_threads(FAISS_THREADS)
 
     # ── load model & data ──────────────────────────────────────────────────
-    config = tr.load_config(CONFIG_PATH)
-    config["config_path"] = str(CONFIG_PATH)
+    config = tr.load_config(config_path)
+    config["config_path"] = str(config_path)
     tr.require_config(config)
     config["eval_max_users"] = None
     tr.set_seed(42)
@@ -200,7 +216,7 @@ def main() -> None:
     test_seen = tr.merge_seen_items(train_seen, bundle.valid_df)
 
     model = tr.build_model(config, bundle.stats, device)
-    ckpt = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
     logging.info(
@@ -226,10 +242,10 @@ def main() -> None:
     user_sec = time.perf_counter() - t0
     logging.info("User emb: shape=%s  time=%.2fs", user_emb.shape, user_sec)
 
-    np.save(str(OUTPUT_DIR / "item_embeddings.npy"), item_emb)
-    np.save(str(OUTPUT_DIR / "test_user_embeddings.npy"), user_emb)
-    np.save(str(OUTPUT_DIR / "test_user_idx.npy"), user_indices)
-    logging.info("Embeddings saved to %s", OUTPUT_DIR)
+    np.save(str(output_dir / "item_embeddings.npy"), item_emb)
+    np.save(str(output_dir / "test_user_embeddings.npy"), user_emb)
+    np.save(str(output_dir / "test_user_idx.npy"), user_indices)
+    logging.info("Embeddings saved to %s", output_dir)
 
     d = item_emb.shape[1]
     n_eval = len(user_emb)
@@ -252,11 +268,11 @@ def main() -> None:
     logging.info("FlatIP metrics: R@50=%.6f  NDCG@50=%.6f  MRR@50=%.6f  (eval %.1fs)",
                  flat_m["recall@50"], flat_m["ndcg@50"], flat_m["mrr@50"], time.perf_counter() - t0)
 
-    rel_diff = abs(flat_m["recall@50"] - EXPECTED_R50) / EXPECTED_R50
+    rel_diff = abs(flat_m["recall@50"] - expected_r50) / expected_r50
     alignment_pass = rel_diff < 0.001
     logging.info(
         "Alignment check: expected=%.6f  actual=%.6f  rel_diff=%.4f%%  %s",
-        EXPECTED_R50, flat_m["recall@50"], rel_diff * 100,
+        expected_r50, flat_m["recall@50"], rel_diff * 100,
         "PASS ✓" if alignment_pass else "WARN ⚠",
     )
 
@@ -270,11 +286,16 @@ def main() -> None:
         "speedup_vs_flatip": 1.0,
         "recall50_delta_vs_flatip": 0.0,
         "metrics": flat_m,
-        "alignment_expected_r50": EXPECTED_R50,
+        "alignment_expected_r50": expected_r50,
         "alignment_actual_r50": float(flat_m["recall@50"]),
         "alignment_rel_diff": float(rel_diff),
         "alignment_pass": alignment_pass,
     }
+    if not alignment_pass:
+        raise RuntimeError(
+            "FlatIP alignment failed; refusing to run IVF/HNSW. "
+            f"expected={expected_r50:.6f} actual={flat_m['recall@50']:.6f}"
+        )
 
     # ── IVF ────────────────────────────────────────────────────────────────
     logging.info("=== Building IVF index: nlist=%d ===", NLIST)
@@ -381,9 +402,9 @@ def main() -> None:
     output: dict[str, Any] = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "model": "Text+Time-aware Transformer Two-Tower tau=0.15 max_len=100",
-        "checkpoint": str(CHECKPOINT_PATH),
+        "checkpoint": str(checkpoint_path),
         "checkpoint_epoch": ckpt.get("epoch"),
-        "alignment_target_recall50": EXPECTED_R50,
+        "alignment_target_recall50": expected_r50,
         "flatip_alignment_pass": alignment_pass,
         "flatip_alignment_rel_diff": float(rel_diff),
         "n_items": num_items,
@@ -406,7 +427,7 @@ def main() -> None:
         "results": all_results,
         "environment": env,
     }
-    write_json(OUTPUT_DIR / "faiss_benchmark_results.json", output)
+    write_json(output_dir / "faiss_benchmark_results.json", output)
 
     # CSV summary
     csv_rows: list[dict[str, Any]] = []
@@ -425,19 +446,19 @@ def main() -> None:
             "avg_latency_ms": f"{res.get('avg_latency_ms', 0):.4f}",
             "recall50_delta_vs_flatip": f"{res.get('recall50_delta_vs_flatip', 0):.6f}",
         })
-    with (OUTPUT_DIR / "faiss_benchmark_results.csv").open("w", newline="", encoding="utf-8") as f:
+    with (output_dir / "faiss_benchmark_results.csv").open("w", newline="", encoding="utf-8") as f:
         if csv_rows:
             writer = csv.DictWriter(f, fieldnames=list(csv_rows[0].keys()))
             writer.writeheader()
             writer.writerows(csv_rows)
 
-    _write_inline_report(OUTPUT_DIR / "faiss_benchmark_report.md", output, all_results, flat_m, env)
+    _write_inline_report(output_dir / "faiss_benchmark_report.md", output, all_results, flat_m, env)
 
     # ── summary ────────────────────────────────────────────────────────────
     logging.info("")
     logging.info("=== SUMMARY ===")
     logging.info("Alignment: expected=%.6f  actual=%.6f  %s",
-                 EXPECTED_R50, flat_m["recall@50"], "PASS" if alignment_pass else "WARN")
+                 expected_r50, flat_m["recall@50"], "PASS" if alignment_pass else "WARN")
     for key, res in all_results.items():
         if key == "hnsw_skipped":
             logging.info("%-24s SKIPPED (%s)", "HNSW", hnsw_skip_reason[:60])
@@ -448,7 +469,7 @@ def main() -> None:
         delta = res.get("recall50_delta_vs_flatip", 0.0)
         logging.info("%-24s R@50=%.6f  delta=%+.6f  speedup=%5.1f×  lat=%.4fms",
                      key, m.get("recall@50", 0), delta, sp, lat)
-    logging.info("Outputs: %s", OUTPUT_DIR)
+    logging.info("Outputs: %s", output_dir)
 
 
 def _write_inline_report(
@@ -475,7 +496,7 @@ def _write_inline_report(
         "",
         "| | Value |",
         "| --- | ---: |",
-        f"| Expected Recall@50 | {EXPECTED_R50:.6f} |",
+        f"| Expected Recall@50 | {meta['alignment_target_recall50']:.6f} |",
         f"| Actual Recall@50   | {flat_m['recall@50']:.6f} |",
         f"| Relative diff      | {meta['flatip_alignment_rel_diff']:.4%} |",
         f"| Alignment pass     | {'✓ PASS' if meta['flatip_alignment_pass'] else '⚠ WARN'} |",

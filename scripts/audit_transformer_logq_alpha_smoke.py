@@ -91,8 +91,11 @@ def main() -> None:
         },
         "variant": {
             "variant_name": config["variant_name"],
+            "loss_variant": str(config.get("loss_variant", "legacy")),
             "logq_alpha": float(config.get("logq_alpha", 1.0)),
             "q_mode": str(config.get("q_mode", "empirical")),
+            "q_estimator": str(config.get("q_estimator", "empirical_frequency")),
+            "mns_uniform_fraction": float(config.get("mns_uniform_fraction", 0.5)),
         },
         "ranking_metrics": ranking_metrics,
         "target_item_popularity_bucket_recall": aggregate_popularity_bucket_recall(

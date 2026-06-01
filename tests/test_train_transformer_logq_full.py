@@ -49,12 +49,19 @@ class ValidateConfigTest(unittest.TestCase):
                 "mask_duplicate_items": True,
             })
 
-    def test_rejects_disabled_logq_for_full_candidate(self) -> None:
-        with self.assertRaisesRegex(ValueError, "use_logq_correction"):
+    def test_rejects_infonce_baseline_for_full_candidate(self) -> None:
+        with self.assertRaisesRegex(ValueError, "loss_variant=infonce"):
             validate_logq_config({
                 "use_logq_correction": False,
                 "mask_duplicate_items": False,
             })
+
+    def test_accepts_mns_without_logq_correction(self) -> None:
+        validate_logq_config({
+            "loss_variant": "mns",
+            "use_logq_correction": False,
+            "mask_duplicate_items": False,
+        })
 
 
 class TrainStepTest(unittest.TestCase):
