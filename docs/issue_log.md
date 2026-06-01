@@ -2736,3 +2736,100 @@ ModuleNotFoundError: No module named 'benchmark_faiss_time_decay_text_mean_pool'
 - 旧历史数字（25× speedup，Recall 损失 −0.18%）已记录于 `docs/reports/faiss_two_tower_benchmark.md`，保留供参考
 
 **最终状态：Superseded（已被 Transformer TT Faiss benchmark 覆盖，2026-05-20）**
+
+---
+
+## Issue 编号：ISSUE-20260602-001
+
+### 问题标题
+
+`alpha=1.0` LogQ correction 提高总体 Recall，但推荐曝光向热门 item 塌缩
+
+### 发生时间
+
+2026-06-02
+
+### 严重等级
+
+High
+
+### 当前状态
+
+Investigating
+
+### 现象
+
+Transformer Two-Tower 在只修改训练 loss 后，full-test Recall@50 跨 seed 稳定提升：
+
+| Seed | Historical baseline | LogQ alpha=1.0 | Delta |
+|---:|---:|---:|---:|
+| 42 | 0.103168 | 0.149926 | +0.046758 |
+| 2024 | 0.103704 | 0.149485 | +0.045781 |
+| 2025 | 0.096223 | 0.147757 | +0.051534 |
+
+但 exact Top50 effect audit 显示增益集中在 `>100` head bucket：
+
+| Target 热度桶 | Baseline | LogQ alpha=1.0 | Delta |
+|---|---:|---:|---:|
+| 1-5 | 0.026480 | 0.001741 | -0.024740 |
+| 6-20 | 0.060390 | 0.013782 | -0.046608 |
+| 21-100 | 0.096687 | 0.068465 | -0.028222 |
+| >100 | 0.138252 | 0.292048 | +0.153795 |
+
+Exposure 同时明显向热门 item 集中：
+
+```text
+avg_pop:             106.81 -> 892.21
+median_pop:          27 -> 286
+P90 pop:             207 -> 2701
+catalog coverage:    152691 -> 57610
+Top50 >100 share:    19.89% -> 81.99%
+```
+
+### 影响范围
+
+- 暂时不能将 `alpha=1.0` LogQ 作为新的 canonical loss。
+- 暂时不能启动基于该 checkpoint 的 4ch 或 Faiss 收口。
+- 面试叙述不能写成“LogQ 已解决 popularity bias”。
+
+### 初步原因判断
+
+当前完整修正：
+
+```python
+corrected_logits = logits - log(q_item)
+```
+
+在训练阶段改变了不同 popularity item 的优化压力。推理阶段不使用 correction，因此最终
+原始相似度空间可能向热门 item 集中。该现象是否能通过减弱 correction 强度缓解，尚未验证。
+
+### 已尝试的排查步骤
+
+1. 完成 3 seed full-test 验证，确认总体 Recall 提升跨 seed 稳定。
+2. 完成 exact Top50 effect audit，确认中热度和长尾桶回退。
+3. 完成 shuffled-q limited-valid negative control：
+
+```text
+baseline        = 0.124420
+empirical-logq  = 0.180120
+shuffled-logq   = 0.078340
+```
+
+4. 确认真实 `q(item)` 映射是效果来源之一，不是任意 logits 扰动。
+
+### 当前处理方案
+
+新增隔离的 `logq_alpha` limited-valid smoke：
+
+```python
+corrected_logits = logits - logq_alpha * log(q_item)
+```
+
+仅比较 `alpha=0.00 / 0.25 / 0.50 / 0.75 / 1.00`。每组补充 item popularity
+bucket 和 exposure audit。不自动进入 full train、4ch 或 Faiss。
+
+### 后续复用建议
+
+- popularity correction 的验收不能只看总体 Recall。
+- 必须同时检查 target item popularity buckets、曝光分布和 catalog coverage。
+- 在人工确认平衡候选前，保持 canonical、README、简历和 CLAUDE 主数字不变。

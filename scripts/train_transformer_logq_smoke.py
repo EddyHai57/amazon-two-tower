@@ -56,6 +56,7 @@ def require_config(cfg: dict[str, Any]) -> None:
     if int(cfg["eval_max_users"]) != 50000:
         raise ValueError("LogQ smoke must use 50K limited-valid eval.")
     validate_q_mode(str(cfg.get("q_mode", "empirical")))
+    validate_logq_alpha(float(cfg.get("logq_alpha", 1.0)))
 
 
 def build_log_q(train_item_idx: torch.Tensor, num_items: int) -> torch.Tensor:
@@ -68,6 +69,11 @@ def build_log_q(train_item_idx: torch.Tensor, num_items: int) -> torch.Tensor:
 def validate_q_mode(q_mode: str) -> None:
     if q_mode not in {"empirical", "shuffled", "constant"}:
         raise ValueError(f"Unsupported q_mode: {q_mode}")
+
+
+def validate_logq_alpha(logq_alpha: float) -> None:
+    if not 0.0 <= logq_alpha <= 1.0:
+        raise ValueError(f"logq_alpha must be within [0.0, 1.0], got {logq_alpha}")
 
 
 def build_log_q_for_mode(
@@ -108,11 +114,13 @@ def apply_logq_and_duplicate_mask(
     *,
     use_logq: bool,
     mask_duplicate_items: bool,
+    logq_alpha: float = 1.0,
 ) -> torch.Tensor:
+    validate_logq_alpha(logq_alpha)
     corrected = logits
     if use_logq:
         candidate_log_q = log_q.to(device=logits.device, dtype=logits.dtype)[batch_item_idx]
-        corrected = corrected - candidate_log_q.unsqueeze(0)
+        corrected = corrected - logq_alpha * candidate_log_q.unsqueeze(0)
     if mask_duplicate_items:
         same_item = batch_item_idx.unsqueeze(0) == batch_item_idx.unsqueeze(1)
         diagonal = torch.eye(logits.shape[0], dtype=torch.bool, device=logits.device)
@@ -131,6 +139,7 @@ def train_one_step(
     *,
     use_logq: bool,
     mask_duplicate_items: bool,
+    logq_alpha: float = 1.0,
 ) -> tuple[float, dict[str, int | float]]:
     optimizer.zero_grad(set_to_none=True)
     raw_user, raw_item = model.raw_batch(user_idx, item_idx, history_item_idx)
@@ -143,6 +152,7 @@ def train_one_step(
         log_q,
         use_logq=use_logq,
         mask_duplicate_items=mask_duplicate_items,
+        logq_alpha=logq_alpha,
     )
     if not torch.isfinite(corrected_logits).all():
         raise FloatingPointError("corrected logits contain nan/inf; stopping.")
@@ -182,6 +192,7 @@ def train_epoch(
             log_q,
             use_logq=bool(cfg["use_logq_correction"]),
             mask_duplicate_items=bool(cfg["mask_duplicate_items"]),
+            logq_alpha=float(cfg.get("logq_alpha", 1.0)),
         )
         rows = int(duplicate_stats["rows"])
         total_loss += loss * rows
@@ -231,10 +242,11 @@ def train(cfg: dict[str, Any]) -> None:
 
     device = base.resolve_device(str(cfg["device"]))
     logging.info(
-        "variant=%s device=%s logq=%s duplicate_mask=%s",
+        "variant=%s device=%s logq=%s alpha=%.2f duplicate_mask=%s",
         cfg["variant_name"],
         device,
         cfg["use_logq_correction"],
+        float(cfg.get("logq_alpha", 1.0)),
         cfg["mask_duplicate_items"],
     )
     bundle = base.load_data(Path(cfg["data_dir"]))
@@ -356,6 +368,7 @@ def train(cfg: dict[str, Any]) -> None:
     summary = {
         "variant_name": cfg["variant_name"],
         "q_mode": q_mode,
+        "logq_alpha": float(cfg.get("logq_alpha", 1.0)),
         "use_logq_correction": bool(cfg["use_logq_correction"]),
         "mask_duplicate_items": bool(cfg["mask_duplicate_items"]),
         "best_epoch": best_epoch,

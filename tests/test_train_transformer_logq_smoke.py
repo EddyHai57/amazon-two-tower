@@ -15,6 +15,7 @@ from train_transformer_logq_smoke import (  # noqa: E402
     build_log_q,
     build_log_q_for_mode,
     summarize_batch_duplicates,
+    validate_logq_alpha,
     validate_q_mode,
 )
 
@@ -101,6 +102,37 @@ class ApplyCorrectionTest(unittest.TestCase):
 
         expected = self.logits - self.log_q[self.items].unsqueeze(0)
         torch.testing.assert_close(corrected, expected)
+
+    def test_logq_alpha_scales_candidate_column_log_probability(self) -> None:
+        corrected = apply_logq_and_duplicate_mask(
+            self.logits,
+            self.items,
+            self.log_q,
+            use_logq=True,
+            mask_duplicate_items=False,
+            logq_alpha=0.25,
+        )
+
+        expected = self.logits - 0.25 * self.log_q[self.items].unsqueeze(0)
+        torch.testing.assert_close(corrected, expected)
+
+    def test_zero_logq_alpha_returns_original_logits(self) -> None:
+        corrected = apply_logq_and_duplicate_mask(
+            self.logits,
+            self.items,
+            self.log_q,
+            use_logq=True,
+            mask_duplicate_items=False,
+            logq_alpha=0.0,
+        )
+
+        torch.testing.assert_close(corrected, self.logits)
+
+    def test_rejects_logq_alpha_outside_closed_unit_interval(self) -> None:
+        for alpha in (-0.01, 1.01):
+            with self.subTest(alpha=alpha):
+                with self.assertRaisesRegex(ValueError, "logq_alpha"):
+                    validate_logq_alpha(alpha)
 
     def test_duplicate_mask_blocks_same_item_off_diagonal_only(self) -> None:
         corrected = apply_logq_and_duplicate_mask(
