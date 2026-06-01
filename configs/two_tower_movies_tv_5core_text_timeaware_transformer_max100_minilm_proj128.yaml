@@ -1,0 +1,36 @@
+run_label: text_timeaware_transformer_max100_minilm_proj128
+data_dir: data/processed/movies_tv_5core
+output_dir: outputs/text_timeaware_transformer_max100_minilm_proj128
+embedding_dim: 128
+batch_size: 4096
+learning_rate: 0.001
+weight_decay: 0.000001
+epochs: 20
+temperature: 0.15
+use_l2_norm: true
+seed: 42
+eval_k_list: [20, 50, 100]
+eval_batch_size: 256
+eval_max_users: 50000
+num_workers: 0
+device: cuda
+save_best_by: valid_recall@50
+history_max_len: 100
+history_weight: 1.0
+# Paired @128 ablation: MiniLM source with wider latent/text projection dim.
+item_text_embedding_path: outputs/item_text_embeddings/movies_tv_5core/item_text_embedding.npy
+item_has_text_path: outputs/item_text_embeddings/movies_tv_5core/item_has_text.npy
+text_proj_dim: 128
+use_has_text_mask: true
+item_fusion: additive
+pooling_type: transformer_timeaware
+decay_rate: 0.8
+num_layers: 1
+num_heads: 4
+ffn_dim: 256
+dropout: 0.1
+# Canonical stability settings (identical to MiniLM @64 final).
+early_stopping_patience: 2
+grad_clip_norm: 0.0
+warmup_steps: 0
+lr_schedule: none
