@@ -13,7 +13,9 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from train_transformer_logq_smoke import (  # noqa: E402
     apply_logq_and_duplicate_mask,
     build_log_q,
+    build_log_q_for_mode,
     summarize_batch_duplicates,
+    validate_q_mode,
 )
 
 
@@ -23,6 +25,57 @@ class BuildLogQTest(unittest.TestCase):
 
         expected_q = torch.tensor([2.0, 1.0, 3.0, 1.0]) / 7.0
         torch.testing.assert_close(log_q.exp(), expected_q)
+
+    def test_constant_q_keeps_softmax_and_cross_entropy_unchanged(self) -> None:
+        logits = torch.tensor([[1.0, 3.0], [2.0, 4.0]])
+        items = torch.tensor([0, 1])
+        log_q = build_log_q_for_mode(
+            torch.tensor([0, 0, 1]),
+            num_items=2,
+            q_mode="constant",
+            shuffle_seed=42,
+        )
+        corrected = apply_logq_and_duplicate_mask(
+            logits,
+            items,
+            log_q,
+            use_logq=True,
+            mask_duplicate_items=False,
+        )
+        labels = torch.arange(2)
+
+        torch.testing.assert_close(
+            torch.softmax(corrected, dim=1),
+            torch.softmax(logits, dim=1),
+        )
+        torch.testing.assert_close(
+            torch.nn.functional.cross_entropy(corrected, labels),
+            torch.nn.functional.cross_entropy(logits, labels),
+        )
+
+    def test_shuffled_q_is_reproducible_and_changes_item_mapping(self) -> None:
+        train_items = torch.tensor([0, 0, 1, 2, 2, 2, 3, 3, 3, 3])
+        empirical = build_log_q(train_items, num_items=4)
+        shuffled_a = build_log_q_for_mode(
+            train_items,
+            num_items=4,
+            q_mode="shuffled",
+            shuffle_seed=2026,
+        )
+        shuffled_b = build_log_q_for_mode(
+            train_items,
+            num_items=4,
+            q_mode="shuffled",
+            shuffle_seed=2026,
+        )
+
+        torch.testing.assert_close(shuffled_a, shuffled_b)
+        self.assertFalse(torch.equal(empirical, shuffled_a))
+        torch.testing.assert_close(empirical.sort().values, shuffled_a.sort().values)
+
+    def test_rejects_unknown_q_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "q_mode"):
+            validate_q_mode("random")
 
 
 class ApplyCorrectionTest(unittest.TestCase):

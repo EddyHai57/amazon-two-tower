@@ -55,6 +55,7 @@ def require_config(cfg: dict[str, Any]) -> None:
         raise ValueError("LogQ smoke must run exactly 3 epochs.")
     if int(cfg["eval_max_users"]) != 50000:
         raise ValueError("LogQ smoke must use 50K limited-valid eval.")
+    validate_q_mode(str(cfg.get("q_mode", "empirical")))
 
 
 def build_log_q(train_item_idx: torch.Tensor, num_items: int) -> torch.Tensor:
@@ -62,6 +63,30 @@ def build_log_q(train_item_idx: torch.Tensor, num_items: int) -> torch.Tensor:
     counts = torch.bincount(train_item_idx.to(dtype=torch.long).cpu(), minlength=num_items)
     q = counts.to(dtype=torch.float32).clamp_min(1.0)
     return (q / q.sum()).log()
+
+
+def validate_q_mode(q_mode: str) -> None:
+    if q_mode not in {"empirical", "shuffled", "constant"}:
+        raise ValueError(f"Unsupported q_mode: {q_mode}")
+
+
+def build_log_q_for_mode(
+    train_item_idx: torch.Tensor,
+    num_items: int,
+    q_mode: str,
+    shuffle_seed: int,
+) -> torch.Tensor:
+    validate_q_mode(q_mode)
+    log_q = build_log_q(train_item_idx, num_items)
+    if q_mode == "empirical":
+        return log_q
+    if q_mode == "constant":
+        return torch.full_like(log_q, -float(np.log(num_items)))
+    if q_mode == "shuffled":
+        generator = torch.Generator()
+        generator.manual_seed(shuffle_seed)
+        return log_q[torch.randperm(num_items, generator=generator)]
+    raise AssertionError("unreachable")
 
 
 def summarize_batch_duplicates(batch_item_idx: torch.Tensor) -> dict[str, int | float]:
@@ -230,10 +255,14 @@ def train(cfg: dict[str, Any]) -> None:
         weight_decay=float(cfg["weight_decay"]),
     )
     train_item_idx = torch.from_numpy(bundle.train_df["item_idx"].to_numpy(dtype=np.int64))
-    log_q = build_log_q(train_item_idx, num_items).to(device)
+    q_mode = str(cfg.get("q_mode", "empirical"))
+    q_shuffle_seed = int(cfg.get("q_shuffle_seed", cfg["seed"]))
+    log_q = build_log_q_for_mode(train_item_idx, num_items, q_mode, q_shuffle_seed).to(device)
     q = log_q.exp()
     q_stats = {
         "source": "train_df.item_idx",
+        "q_mode": q_mode,
+        "q_shuffle_seed": q_shuffle_seed,
         "num_items": num_items,
         "min_q": float(q.min().item()),
         "max_q": float(q.max().item()),
@@ -326,6 +355,7 @@ def train(cfg: dict[str, Any]) -> None:
     train_rows = sum(int(row["train_rows"]) for row in epoch_duplicate_stats)
     summary = {
         "variant_name": cfg["variant_name"],
+        "q_mode": q_mode,
         "use_logq_correction": bool(cfg["use_logq_correction"]),
         "mask_duplicate_items": bool(cfg["mask_duplicate_items"]),
         "best_epoch": best_epoch,
