@@ -23,7 +23,7 @@ Launch from `/workspace/amazon-two-tower` with an external log:
 mkdir -p /workspace/server-logs
 tmux new-session -d -s transformer_sampling_overnight \
   "cd /workspace/amazon-two-tower && \
-   python scripts/run_transformer_sampling_overnight.py \
+   /venv/main/bin/python scripts/run_transformer_sampling_overnight.py \
      --generated_config_dir /workspace/server-logs/transformer_sampling_generated_configs \
    2>&1 | tee /workspace/server-logs/transformer_sampling_overnight_queue.log"
 ```
