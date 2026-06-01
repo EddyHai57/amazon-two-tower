@@ -1,13 +1,8 @@
 """
 M5.5 Pure text retrieval smoke test.
 
-User query = mean-pooling of history item text embeddings.
-Item embeddings are unit-normalized (L2), so dot product = cosine similarity.
-
-Modes:
-  use_all_items          : all history items contribute to query (default)
-  history_has_text_only  : only history items with real text contribute to query;
-                           candidate pool still includes all items
+Candidate generation reuses the 4-channel Text Semantic implementation:
+time-decay weighted history query + per-row/query L2 normalization + cosine similarity.
 """
 
 import argparse
@@ -15,10 +10,22 @@ import json
 import math
 import os
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
+
+from train_transformer_maxlen100_smoke import (
+    TRAIN_COLUMNS,
+    build_history_matrix,
+    build_seen_items,
+    merge_seen_items,
+)
+from run_multichannel_retrieval_v2 import (
+    generate_text_semantic_candidates,
+    load_text_embeddings,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -38,14 +45,11 @@ def parse_args():
     )
     p.add_argument("--max_users", type=int, default=None,
                    help="Limit number of eval users per split (None = all)")
-    p.add_argument("--batch_size_users", type=int, default=2000)
+    p.add_argument("--batch_size_users", type=int, default=256)
     p.add_argument("--topk", nargs="+", type=int, default=[20, 50, 100])
     p.add_argument("--device", default="auto")
-    p.add_argument(
-        "--mode",
-        choices=["use_all_items", "history_has_text_only"],
-        default="use_all_items",
-    )
+    p.add_argument("--history_max_len", type=int, default=100)
+    p.add_argument("--text_decay_rate", type=float, default=0.8)
     p.add_argument("--hf_cache_dir", default="/workspace/.hf_home/datasets")
     p.add_argument(
         "--skip_has_text_mask",
@@ -128,8 +132,9 @@ def compute_metrics(ranks: list[int | None], topk_list: list[int]) -> dict:
 def eval_split(
     split_name: str,
     split_path: str,
-    train_history: dict[int, list[int]],
-    item_emb: torch.Tensor,          # (n_items, dim) on device, already normalized
+    history_matrix: np.ndarray,
+    seen_items: dict[int, set[int]],
+    item_emb: torch.Tensor,          # (n_items, dim) on device, L2-normalized
     has_text_mask: np.ndarray | None,
     args,
     device: torch.device,
@@ -139,6 +144,7 @@ def eval_split(
     max_k = max(args.topk)
 
     df = pd.read_parquet(split_path)
+    df = df[~df["is_cold_item_for_eval"].astype(bool)].copy()
     # One target per user
     target_map: dict[int, int] = dict(zip(df["user_idx"].tolist(), df["item_idx"].tolist()))
 
@@ -146,81 +152,25 @@ def eval_split(
     if args.max_users is not None:
         eval_users = eval_users[: args.max_users]
 
+    candidates, num_skipped = generate_text_semantic_candidates(
+        eval_users=eval_users,
+        test_history_matrix=history_matrix,
+        test_seen=seen_items,
+        item_text_norm_gpu=item_emb,
+        top_k=max_k,
+        decay_rate=args.text_decay_rate,
+        device=device,
+        batch_size=args.batch_size_users,
+    )
+
     ranks: list[int | None] = []
     target_has_text_flags: list[bool] = []
-    num_skipped = 0
-
-    for batch_start in range(0, len(eval_users), args.batch_size_users):
-        batch_users = eval_users[batch_start : batch_start + args.batch_size_users]
-        queries = []
-        histories = []
-        targets_batch = []
-
-        for uid in batch_users:
-            hist = train_history.get(uid, [])
-            target_idx = target_map[uid]
-
-            if not hist:
-                num_skipped += 1
-                queries.append(None)
-                histories.append([])
-                targets_batch.append(target_idx)
-                continue
-
-            hist_arr = np.array(hist, dtype=np.int64)
-
-            if args.mode == "history_has_text_only" and has_text_mask is not None:
-                hist_text = hist_arr[has_text_mask[hist_arr]]
-                if len(hist_text) == 0:
-                    hist_text = hist_arr  # fallback: use all if none have text
-                hist_arr = hist_text
-
-            # Mean pool history embeddings
-            hist_emb = item_emb[torch.from_numpy(hist_arr).long().to(device)]  # (h, dim)
-            query = hist_emb.mean(dim=0)  # (dim,)
-            queries.append(query)
-            histories.append(hist)
-            targets_batch.append(target_idx)
-
-        # Batch similarity
-        valid_indices = [i for i, q in enumerate(queries) if q is not None]
-        if valid_indices:
-            query_mat = torch.stack([queries[i] for i in valid_indices])  # (m, dim)
-            # dot product = cosine (embeddings are unit-norm)
-            scores_mat = query_mat @ item_emb.T  # (m, n_items)
-
-            for local_i, global_i in enumerate(valid_indices):
-                uid = batch_users[global_i]
-                hist = histories[global_i]
-                target_idx = targets_batch[global_i]
-                scores = scores_mat[local_i]  # (n_items,)
-
-                # Mask history
-                if hist:
-                    scores[torch.tensor(hist, dtype=torch.long, device=device)] = float("-inf")
-
-                # Top-K (sorted)
-                top_k_vals, top_k_idxs = torch.topk(scores, k=min(max_k, n_items), largest=True)
-                top_k_list = top_k_idxs.cpu().tolist()
-
-                if target_idx in top_k_list:
-                    rank = top_k_list.index(target_idx) + 1
-                else:
-                    rank = None
-                ranks.append(rank)
-
-                if has_text_mask is not None:
-                    target_has_text_flags.append(bool(has_text_mask[target_idx]))
-
-        elapsed = time.time() - t0
-        done = batch_start + len(batch_users)
-        print(
-            f"  [{split_name}] {done}/{len(eval_users)} users  "
-            f"({100*done/len(eval_users):.1f}%)  {elapsed:.1f}s",
-            end="\r",
-        )
-
-    print()
+    for uid in eval_users:
+        target_idx = target_map[uid]
+        top_k_list = candidates.get(uid, [])
+        ranks.append(top_k_list.index(target_idx) + 1 if target_idx in top_k_list else None)
+        if has_text_mask is not None:
+            target_has_text_flags.append(bool(has_text_mask[target_idx]))
 
     metrics = compute_metrics(ranks, args.topk)
     metrics["num_skipped_users"] = num_skipped
@@ -265,7 +215,8 @@ def main():
 
     # --- Load item embeddings ---
     print(f"[1] Loading item embeddings from {args.embedding_path}")
-    emb_np = np.load(args.embedding_path).astype(np.float32)
+    raw_shape = np.load(args.embedding_path, mmap_mode="r").shape
+    emb_np = load_text_embeddings(Path(args.embedding_path), n_items=raw_shape[0])
     n_items, dim = emb_np.shape
     print(f"    shape={emb_np.shape}  dtype={emb_np.dtype}")
     item_emb = torch.from_numpy(emb_np).to(device)  # (n_items, dim)
@@ -281,10 +232,19 @@ def main():
     # --- Build train history ---
     print(f"[3] Loading train history from {args.data_dir}/train.parquet")
     train_df = pd.read_parquet(os.path.join(args.data_dir, "train.parquet"))
-    train_history: dict[int, list[int]] = (
-        train_df.groupby("user_idx")["item_idx"].apply(list).to_dict()
+    with open(os.path.join(args.data_dir, "stats.json")) as f:
+        stats = json.load(f)
+    n_users = int(stats["n_users"])
+    train_history_matrix = build_history_matrix(train_df, n_users, args.history_max_len)
+    train_seen = build_seen_items(train_df)
+    print(f"    {n_users} users in history matrix")
+
+    valid_df = pd.read_parquet(os.path.join(args.data_dir, "valid.parquet"))
+    test_frame = pd.concat(
+        [train_df, valid_df[TRAIN_COLUMNS]], ignore_index=True
     )
-    print(f"    {len(train_history)} users with train history")
+    test_history_matrix = build_history_matrix(test_frame, n_users, args.history_max_len)
+    test_seen = merge_seen_items(train_seen, valid_df)
 
     # --- Eval splits ---
     all_results = {}
@@ -294,7 +254,8 @@ def main():
         metrics = eval_split(
             split_name=split_name,
             split_path=split_path,
-            train_history=train_history,
+            history_matrix=train_history_matrix if split_name == "valid" else test_history_matrix,
+            seen_items=train_seen if split_name == "valid" else test_seen,
             item_emb=item_emb,
             has_text_mask=has_text_mask,
             args=args,
@@ -309,10 +270,11 @@ def main():
     # --- Save results ---
     result_path = os.path.join(args.output_dir, "metrics.json")
     run_config = {
-        "mode": args.mode,
         "max_users": args.max_users,
         "topk": args.topk,
         "embedding_path": args.embedding_path,
+        "history_max_len": args.history_max_len,
+        "text_decay_rate": args.text_decay_rate,
         "device": device_str,
         "skip_has_text_mask": args.skip_has_text_mask,
     }
