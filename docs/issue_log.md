@@ -2854,3 +2854,36 @@ limited-valid` 隔离 smoke 和 exact Top50 exposure audit。
 - `alpha=0.25` 的 full-test multi-seed 尚未运行。
 - 不扩大 alpha sweep，不自动启动 full train、4ch 或 Faiss。
 - 当前状态保持 `Investigating`。
+
+### 2026-06-02 Industrial sampling queue 启动状态
+
+已按人工确认启动隔离的工业 sampling 验证队列。新 Vast 容器初始训练环境存在依赖缺失：
+
+```text
+/venv/main/bin/python: torch 可用
+missing: faiss, pandas, pyarrow
+```
+
+已在服务器训练 venv 补齐：
+
+```text
+faiss-cpu==1.14.2
+pandas==3.0.3
+pyarrow==24.0.0
+```
+
+补齐后服务器侧 `py_compile` 与 `unittest discover` 共 `35` 个测试全部通过。
+
+当前运行状态：
+
+```text
+tmux: transformer_sampling_overnight
+log: /workspace/server-logs/transformer_sampling_overnight_queue.log
+current first new smoke: uber-batchq-alpha025
+```
+
+仍保持 `Investigating`：
+
+- 尚无任何新 sampling 方法通过 full-test、4ch 或 Faiss 验收。
+- 所有新结果只写独立 `outputs/`。
+- canonical、README、简历和 CLAUDE 主数字保持不变。
