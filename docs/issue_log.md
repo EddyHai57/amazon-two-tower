@@ -2887,3 +2887,23 @@ current first new smoke: uber-batchq-alpha025
 - 尚无任何新 sampling 方法通过 full-test、4ch 或 Faiss 验收。
 - 所有新结果只写独立 `outputs/`。
 - canonical、README、简历和 CLAUDE 主数字保持不变。
+
+### 2026-06-02 Uber BatchQ low-alpha constrained validation
+
+状态：`Investigating`
+
+已完成 `alpha=0.05 / 0.10 / 0.15` limited-valid smoke，并新增完整 catalog exposure
+entropy / Gini。预先锁定 gate 后，仅 `alpha=0.10` 通过：
+
+```text
+Recall@50:          0.124460 -> 0.137700
+coverage:           141547 -> 140411
+Top50 >100 share:   20.97% -> 25.84%
+exposure Gini:      0.6460 -> 0.6732
+```
+
+四个 target popularity buckets 均提升。下一步仅运行 `alpha=0.10` 的 gated full-test
+与 multi-seed 验证；任一关失败自动停止。不自动进入 4ch、Faiss 或 canonical replacement。
+
+其他已完成 smoke：refined LogQ `alpha=1.0`、MNS `50% uniform`、MNS + refined LogQ。
+这些配置存在曝光集中或 coverage 下降，只保留为 diagnostic evidence，不在本轮继续 sweep。

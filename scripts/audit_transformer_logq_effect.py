@@ -14,7 +14,7 @@ import torch
 import yaml
 
 import train_transformer_stability_sweep as stability
-from train_transformer_logq_smoke import build_log_q
+from train_transformer_logq_smoke import build_log_q_for_mode
 
 
 POPULARITY_BUCKETS = [
@@ -201,11 +201,23 @@ def load_model(
     return model
 
 
-def correction_stats(item_popularity: np.ndarray) -> dict[str, Any]:
+def correction_stats(
+    item_popularity: np.ndarray,
+    *,
+    q_estimator: str = "empirical_frequency",
+    batch_size: int = 1,
+) -> dict[str, Any]:
     item_tensor = torch.from_numpy(
         np.repeat(np.arange(len(item_popularity), dtype=np.int64), item_popularity)
     )
-    negative_log_q = -build_log_q(item_tensor, len(item_popularity)).numpy()
+    negative_log_q = -build_log_q_for_mode(
+        item_tensor,
+        len(item_popularity),
+        "empirical",
+        42,
+        q_estimator=q_estimator,
+        batch_size=batch_size,
+    ).numpy()
     q = np.exp(-negative_log_q)
 
     def summarize_bucket(mask: np.ndarray) -> dict[str, int | float | None]:
@@ -218,7 +230,11 @@ def correction_stats(item_popularity: np.ndarray) -> dict[str, Any]:
         }
 
     return {
-        "q_definition": "bincount(train_df.item_idx).clamp_min(1) / sum",
+        "q_definition": (
+            "1 - (1 - train_item_frequency) ** batch_size"
+            if q_estimator == "batch_appearance"
+            else "bincount(train_df.item_idx).clamp_min(1) / sum"
+        ),
         "train_item_count_distribution": {
             "min": int(item_popularity.min()),
             "median": float(np.median(item_popularity)),
@@ -377,7 +393,11 @@ def main() -> None:
             "hit_transition": aggregate_hit_transition(baseline_hit, logq_hit),
             "top50_average_jaccard": average_jaccard(baseline_topk, logq_topk),
         },
-        "train_only_logq": correction_stats(item_popularity),
+        "train_only_logq": correction_stats(
+            item_popularity,
+            q_estimator=str(logq_config.get("q_estimator", "empirical_frequency")),
+            batch_size=int(logq_config.get("batch_size", 1)),
+        ),
     }
     np.save(output_dir / "baseline_top50.npy", baseline_topk)
     np.save(output_dir / "logq_top50.npy", logq_topk)

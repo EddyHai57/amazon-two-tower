@@ -95,6 +95,18 @@ class CorrectionStatsTest(unittest.TestCase):
             1,
         )
 
+    def test_reports_batch_appearance_q_definition(self) -> None:
+        result = correction_stats(
+            np.array([0, 1, 5, 30, 200]),
+            q_estimator="batch_appearance",
+            batch_size=4096,
+        )
+
+        self.assertEqual(
+            result["q_definition"],
+            "1 - (1 - train_item_frequency) ** batch_size",
+        )
+
 
 class JaccardTest(unittest.TestCase):
     def test_averages_per_user_topk_overlap(self) -> None:

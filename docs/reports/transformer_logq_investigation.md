@@ -228,3 +228,83 @@ outputs/transformer_logq_effect_audit/audit_summary.json
 outputs/transformer_logq_alpha_smoke/
 outputs/transformer_logq_alpha_smoke_audit/
 ```
+
+## 11. Uber BatchQ Low-Alpha Pareto Smoke
+
+### 11.1 Constraint objective
+
+本轮不再以最大化单一 Recall 为目标，而是使用预先锁定的约束：
+
+```text
+max Recall@50
+s.t. 长尾桶基本不退化
+     Top50 热门占比不过度增加
+     catalog coverage 基本保持
+     exposure entropy / Gini 不明显恶化
+```
+
+所有组均使用相同 `seed=42`、`3 epochs`、`50K limited-valid`、exact Top50 和
+Uber batch appearance Q：
+
+```text
+Q = 1 - (1 - w) ** batch_size
+```
+
+### 11.2 Completed results
+
+| Alpha | Recall@50 | coverage | Top50 `>100` share | entropy | Gini | Gate |
+|---:|---:|---:|---:|---:|---:|---|
+| 0.00 | 0.124460 | 141547 | 20.97% | 0.9261 | 0.6460 | baseline |
+| 0.05 | 0.130240 | 139931 | 23.97% | 0.9208 | 0.6643 | FAIL: `6-20` bucket |
+| 0.10 | 0.137700 | 140411 | 25.84% | 0.9173 | 0.6732 | PASS |
+| 0.15 | 0.145220 | 137705 | 29.97% | 0.9089 | 0.6982 | FAIL: Gini |
+| 0.25 | 0.157980 | 129609 | 38.23% | 0.8884 | 0.7534 | reference only |
+
+`alpha=0.10` 的 target item popularity bucket Recall@50：
+
+| Bucket | Baseline | Uber BatchQ `alpha=0.10` | Delta |
+|---|---:|---:|---:|
+| `1-5` | 0.032455 | 0.043528 | +0.011073 |
+| `6-20` | 0.072903 | 0.073520 | +0.000618 |
+| `21-100` | 0.114014 | 0.124817 | +0.010803 |
+| `>100` | 0.160671 | 0.180362 | +0.019691 |
+
+### 11.3 Interpretation boundary
+
+`alpha=0.10` 是 limited-valid 的温和 Pareto candidate，不是新 canonical。它在 coverage
+基本保持、热门占比受控的前提下提高了四个 target 热度桶，但仍需要 full-test 与
+multi-seed 验收。面试中应说明：LogQ 是 sampling-bias correction，不是单调去热门的
+旋钮；强修正会改变 embedding dynamics，因此必须使用带约束的离线审计，而不能只报
+总 Recall。
+
+### 11.4 Other sampling methods already tested
+
+| Method | Limited-valid Recall@50 | coverage | Top50 `>100` share | Current decision |
+|---|---:|---:|---:|---|
+| Refined LogQ `alpha=1.0` | 0.180360 | 40867 | 81.67% | diagnostic-only, reject strong setting |
+| MNS `50% uniform` | 0.154040 | 90824 | 41.22% | reject current ratio |
+| MNS + Refined LogQ | 0.161880 | 28560 | 85.51% | diagnostic-only, reject |
+
+这些结果不证明 refined LogQ 或 MNS 永久无效，只证明当前强度或比例不适合作为本轮主候选。
+在 Uber BatchQ `alpha=0.10` 完成 full 验收前，不继续扩展新的采样 sweep。
+
+## 12. Uber BatchQ Alpha=0.10 Full Validation Queue
+
+本轮预先锁定三个关卡，任何一关失败都自动停止：
+
+1. `alpha=0.00 seed42` full sanity：同一 Uber BatchQ 分支将 correction 归零，
+   `|full_test_recall@50 - 0.103168| < 0.001`。
+2. `alpha=0.10 seed42` full train + full effect audit：四个 target 热度桶均不低于 canonical，
+   coverage 至少为 canonical 的 `95%`，Top50 `>100` share `<30%`，Gini `<0.70`。
+3. `alpha=0.10 seed2024 / seed2025` full train + full test：三个 paired delta 全部为正，
+   candidate 最差 seed 高于 canonical 最差 seed。
+
+输出写入：
+
+```text
+outputs/transformer_sampling_uber_alpha010_full_validation/
+outputs/text_timeaware_transformer_sampling_full/uber-batchq-alpha000-sanity-seed42/
+outputs/text_timeaware_transformer_sampling_full/uber-batchq-alpha010-seed*/
+```
+
+本轮不自动启动 4ch、Faiss 或 canonical replacement。
