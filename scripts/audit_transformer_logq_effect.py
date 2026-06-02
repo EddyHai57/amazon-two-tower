@@ -24,6 +24,8 @@ POPULARITY_BUCKETS = [
     (">100", 101, None),
 ]
 POPULARITY_BUCKETS_WITH_UNSEEN = [("unseen", 0, 0), *POPULARITY_BUCKETS]
+BOOTSTRAP_SEED = 42
+BOOTSTRAP_RESAMPLES = 10000
 
 
 def bucket_name(popularity: int) -> str:
@@ -68,6 +70,68 @@ def aggregate_hit_transition(
         "baseline_only": int((baseline_hit & ~logq_hit).sum()),
         "logq_only": int((~baseline_hit & logq_hit).sum()),
         "neither_hit": int((~baseline_hit & ~logq_hit).sum()),
+    }
+
+
+def paired_bootstrap_ci(
+    baseline_hit: np.ndarray,
+    candidate_hit: np.ndarray,
+    *,
+    seed: int = BOOTSTRAP_SEED,
+    resamples: int = BOOTSTRAP_RESAMPLES,
+) -> dict[str, int | float]:
+    if len(baseline_hit) != len(candidate_hit):
+        raise ValueError("Paired bootstrap inputs must have equal lengths.")
+    count = len(baseline_hit)
+    if count == 0:
+        return {
+            "point_estimate": 0.0,
+            "ci95_low": 0.0,
+            "ci95_high": 0.0,
+            "num_users": 0,
+        }
+    deltas = candidate_hit.astype(np.int8) - baseline_hit.astype(np.int8)
+    counts = np.array([
+        np.count_nonzero(deltas == -1),
+        np.count_nonzero(deltas == 0),
+        np.count_nonzero(deltas == 1),
+    ])
+    samples = np.random.default_rng(seed).multinomial(count, counts / count, size=resamples)
+    sampled_delta = (samples[:, 2] - samples[:, 0]) / count
+    return {
+        "point_estimate": float(deltas.mean()),
+        "ci95_low": float(np.percentile(sampled_delta, 2.5)),
+        "ci95_high": float(np.percentile(sampled_delta, 97.5)),
+        "num_users": count,
+    }
+
+
+def summarize_paired_bootstrap(
+    baseline_hit: np.ndarray,
+    candidate_hit: np.ndarray,
+    targets: np.ndarray,
+    item_popularity: np.ndarray,
+    *,
+    seed: int = BOOTSTRAP_SEED,
+    resamples: int = BOOTSTRAP_RESAMPLES,
+) -> dict[str, Any]:
+    long_tail_mask = item_popularity[targets] <= 20
+    return {
+        "bootstrap_seed": seed,
+        "bootstrap_resamples": resamples,
+        "overall_recall@50_delta": paired_bootstrap_ci(
+            baseline_hit,
+            candidate_hit,
+            seed=seed,
+            resamples=resamples,
+        ),
+        "long_tail_recall@50_delta": paired_bootstrap_ci(
+            baseline_hit[long_tail_mask],
+            candidate_hit[long_tail_mask],
+            seed=seed,
+            resamples=resamples,
+        ),
+        "long_tail_definition": "target_item_train_popularity <= 20",
     }
 
 
@@ -392,6 +456,12 @@ def main() -> None:
             ),
             "hit_transition": aggregate_hit_transition(baseline_hit, logq_hit),
             "top50_average_jaccard": average_jaccard(baseline_topk, logq_topk),
+            "paired_bootstrap_ci": summarize_paired_bootstrap(
+                baseline_hit,
+                logq_hit,
+                targets,
+                item_popularity,
+            ),
         },
         "train_only_logq": correction_stats(
             item_popularity,

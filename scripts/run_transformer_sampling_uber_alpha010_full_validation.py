@@ -18,7 +18,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ROOT = Path("outputs/transformer_sampling_uber_alpha010_full_validation")
 GENERATED_CONFIG_DIR = ROOT / "generated_configs"
 BASELINE_CONFIG = Path("configs/two_tower_movies_tv_5core_text_timeaware_transformer_max100_final.yaml")
-BASELINE_CHECKPOINT = Path("outputs/text_timeaware_transformer_max100_final/checkpoints/best_model.pt")
+BASELINE_CHECKPOINTS = {
+    42: Path("outputs/text_timeaware_transformer_max100_final/checkpoints/best_model.pt"),
+    2024: Path("outputs/transformer_user_tower_investigation/seed_robustness/seed2024/checkpoints/best_model.pt"),
+    2025: Path("outputs/transformer_user_tower_investigation/seed_robustness/seed2025/checkpoints/best_model.pt"),
+}
 BASELINE_FULL_TEST_RECALL = {
     42: 0.10316836868290129,
     2024: 0.103704,
@@ -47,6 +51,12 @@ def write_yaml(path: Path, payload: dict[str, Any]) -> None:
 def run(command: list[str]) -> None:
     logging.info("RUN %s", " ".join(command))
     subprocess.run(command, cwd=REPO_ROOT, check=True)
+
+
+def get_baseline_checkpoint(seed: int) -> Path:
+    if seed not in BASELINE_CHECKPOINTS:
+        raise ValueError(f"Unsupported baseline seed: {seed}")
+    return BASELINE_CHECKPOINTS[seed]
 
 
 def build_full_config(*, alpha: float, seed: int, label: str) -> Path:
@@ -80,10 +90,10 @@ def ensure_full_eval(config_path: Path) -> dict[str, Any]:
     return read_json(summary_path)
 
 
-def ensure_seed42_audit(config_path: Path) -> dict[str, Any]:
+def ensure_effect_audit(config_path: Path, *, seed: int) -> dict[str, Any]:
     config = read_yaml(config_path)
     checkpoint = Path(config["output_dir"]) / "checkpoints" / "best_model.pt"
-    output_dir = ROOT / "seed42_effect_audit"
+    output_dir = ROOT / f"seed{seed}_effect_audit"
     summary_path = output_dir / "audit_summary.json"
     if not summary_path.exists():
         if output_dir.exists() and any(output_dir.iterdir()):
@@ -94,7 +104,7 @@ def ensure_seed42_audit(config_path: Path) -> dict[str, Any]:
             "--baseline_config",
             str(BASELINE_CONFIG),
             "--baseline_checkpoint",
-            str(BASELINE_CHECKPOINT),
+            str(get_baseline_checkpoint(seed)),
             "--logq_config",
             str(config_path),
             "--logq_checkpoint",
@@ -123,7 +133,7 @@ def combine_long_tail_recall(buckets: dict[str, dict[str, int | float]]) -> floa
     return hits / targets if targets else 0.0
 
 
-def evaluate_gate1(audit: dict[str, Any]) -> dict[str, Any]:
+def evaluate_audit_gate(audit: dict[str, Any], *, seed: int) -> dict[str, Any]:
     baseline = audit["baseline"]
     candidate = audit["logq"]
     baseline_buckets = baseline["target_item_popularity_bucket_recall"]
@@ -134,14 +144,17 @@ def evaluate_gate1(audit: dict[str, Any]) -> dict[str, Any]:
     }
     exposure = candidate["exposure_metrics"]
     baseline_coverage = int(baseline["exposure_metrics"]["catalog_coverage"])
+    overall_ci = audit["comparison"]["paired_bootstrap_ci"]["overall_recall@50_delta"]
     constraints = {
         **{f"bucket_{bucket}": bucket_delta[bucket] >= 0.0 for bucket in bucket_delta},
         "coverage": int(exposure["catalog_coverage"]) >= baseline_coverage * 0.95,
         "head_share": float(exposure["topk_item_bucket_share"][">100"]) < 0.30,
         "exposure_gini": float(exposure["exposure_gini"]) < 0.70,
+        "overall_recall_bootstrap_ci": float(overall_ci["ci95_low"]) > 0.0,
     }
     return {
-        "name": "gate1_alpha010_seed42_full_audit",
+        "name": f"alpha010_seed{seed}_full_audit",
+        "seed": seed,
         "passes_gate": all(constraints.values()),
         "failed_constraints": [name for name, passed in constraints.items() if not passed],
         "ranking_metrics": candidate["ranking_metrics"],
@@ -150,16 +163,21 @@ def evaluate_gate1(audit: dict[str, Any]) -> dict[str, Any]:
         "target_item_popularity_bucket_recall_delta": bucket_delta,
         "long_tail_recall@50": combine_long_tail_recall(candidate_buckets),
         "baseline_long_tail_recall@50": combine_long_tail_recall(baseline_buckets),
+        "paired_bootstrap_ci": audit["comparison"]["paired_bootstrap_ci"],
     }
 
 
-def evaluate_gate2(candidate_recall: dict[int, float]) -> dict[str, Any]:
+def evaluate_gate2(seed_audits: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    candidate_recall = {
+        seed: float(audit["ranking_metrics"]["recall@50"])
+        for seed, audit in seed_audits.items()
+    }
     paired_delta = {
         seed: candidate_recall[seed] - BASELINE_FULL_TEST_RECALL[seed]
         for seed in (42, 2024, 2025)
     }
     constraints = {
-        **{f"paired_delta_seed{seed}": paired_delta[seed] > 0.0 for seed in paired_delta},
+        **{f"seed{seed}_audit_gate": seed_audits[seed]["passes_gate"] for seed in seed_audits},
         "candidate_min_gt_canonical_min": (
             min(candidate_recall.values()) > min(BASELINE_FULL_TEST_RECALL.values())
         ),
@@ -177,13 +195,48 @@ def evaluate_gate2(candidate_recall: dict[int, float]) -> dict[str, Any]:
         "candidate_std": statistics.pstdev(candidate_recall.values()),
         "baseline_min": min(BASELINE_FULL_TEST_RECALL.values()),
         "candidate_min": min(candidate_recall.values()),
+        "seed_audits": seed_audits,
     }
+
+
+def write_final_report(payload: dict[str, Any]) -> None:
+    gate2 = payload.get("gate2", {})
+    rows = []
+    for seed in (42, 2024, 2025):
+        baseline = BASELINE_FULL_TEST_RECALL[seed]
+        candidate = gate2.get("candidate_full_test_recall@50", {}).get(seed)
+        rows.append(
+            f"| {seed} | {baseline:.6f} | "
+            f"{candidate:.6f} | {candidate - baseline:+.6f} |"
+            if candidate is not None else f"| {seed} | {baseline:.6f} | - | - |"
+        )
+    report = f"""# Uber BatchQ alpha=0.10 Full Validation
+
+## Status
+
+```text
+{payload["status"]}
+```
+
+## Multi-seed Full-Test Recall@50
+
+| Seed | Canonical | Uber BatchQ alpha=0.10 | Delta |
+|---:|---:|---:|---:|
+{chr(10).join(rows)}
+
+## Boundaries
+
+- This report is offline temporal leave-one-out evidence only.
+- No 4ch rerun, Faiss benchmark, canonical replacement, README, resume, or CLAUDE update was started.
+"""
+    (ROOT / "final_report.md").write_text(report, encoding="utf-8")
 
 
 def stop_after_gate(gate: dict[str, Any], payload: dict[str, Any]) -> None:
     payload["status"] = f"stopped_after_{gate['name']}"
     payload["failed_gate"] = gate
     write_json(ROOT / "final_summary.json", payload)
+    write_final_report(payload)
     logging.error("STOP %s", payload["status"])
 
 
@@ -207,7 +260,7 @@ def main() -> None:
     seed42_config = build_full_config(alpha=0.10, seed=42, label="uber-batchq-alpha010-seed42")
     seed42_eval = ensure_full_eval(seed42_config)
     payload["seed42_full_eval"] = seed42_eval
-    gate1 = evaluate_gate1(ensure_seed42_audit(seed42_config))
+    gate1 = evaluate_audit_gate(ensure_effect_audit(seed42_config, seed=42), seed=42)
     payload["gate1"] = gate1
     write_json(ROOT / "gate1_alpha010_seed42_full_audit.json", gate1)
     if not gate1["passes_gate"]:
@@ -215,18 +268,25 @@ def main() -> None:
         return
 
     multiseed_eval = {42: seed42_eval}
+    seed_audits = {42: gate1}
     for seed in (2024, 2025):
         config = build_full_config(alpha=0.10, seed=seed, label=f"uber-batchq-alpha010-seed{seed}")
         multiseed_eval[seed] = ensure_full_eval(config)
+        audit_gate = evaluate_audit_gate(ensure_effect_audit(config, seed=seed), seed=seed)
+        seed_audits[seed] = audit_gate
+        write_json(ROOT / f"gate2_alpha010_seed{seed}_audit.json", audit_gate)
+        if not audit_gate["passes_gate"]:
+            payload["multiseed_full_eval"] = multiseed_eval
+            payload["seed_audits"] = seed_audits
+            stop_after_gate(audit_gate, payload)
+            return
     payload["multiseed_full_eval"] = multiseed_eval
-    gate2 = evaluate_gate2({
-        seed: float(summary["full_test_recall@50"])
-        for seed, summary in multiseed_eval.items()
-    })
+    gate2 = evaluate_gate2(seed_audits)
     payload["gate2"] = gate2
     write_json(ROOT / "gate2_alpha010_multiseed.json", gate2)
     payload["status"] = "completed_all_gates" if gate2["passes_gate"] else "stopped_after_gate2"
     write_json(ROOT / "final_summary.json", payload)
+    write_final_report(payload)
     logging.info("WROTE %s", ROOT / "final_summary.json")
 
 

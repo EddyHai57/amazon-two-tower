@@ -2907,3 +2907,20 @@ exposure Gini:      0.6460 -> 0.6732
 
 其他已完成 smoke：refined LogQ `alpha=1.0`、MNS `50% uniform`、MNS + refined LogQ。
 这些配置存在曝光集中或 coverage 下降，只保留为 diagnostic evidence，不在本轮继续 sweep。
+
+### 2026-06-02 Uber BatchQ alpha010 full-validation hardening
+
+状态：`Prepared, not yet restarted`
+
+新增三 seed paired audit 与 deterministic bootstrap：
+
+```text
+bootstrap_seed=42
+bootstrap_resamples=10000
+overall Recall delta CI95
+long-tail Recall delta CI95, target popularity <=20
+```
+
+每个 seed 均加载对应 historical baseline checkpoint。每个 seed 的 overall Recall delta
+`CI95 low > 0` 为硬 gate。误启动 gate0 产生的 partial checkpoint 在正式重跑前归档，
+不得续跑、删除或静默覆盖。

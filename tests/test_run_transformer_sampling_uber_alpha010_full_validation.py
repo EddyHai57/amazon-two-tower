@@ -9,10 +9,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from run_transformer_sampling_uber_alpha010_full_validation import (  # noqa: E402
+    BASELINE_CHECKPOINTS,
     BASELINE_FULL_TEST_RECALL,
+    evaluate_audit_gate,
     evaluate_gate0,
-    evaluate_gate1,
     evaluate_gate2,
+    get_baseline_checkpoint,
 )
 
 
@@ -26,6 +28,7 @@ def make_audit(
     bucket_6to20: float = 0.070000,
     bucket_21to100: float = 0.110000,
     bucket_gt100: float = 0.150000,
+    ci95_low: float = 0.001,
 ) -> dict:
     baseline_buckets = {
         "1-5": {"recall@50": 0.025000, "targets": 100, "hits": 3},
@@ -58,6 +61,16 @@ def make_audit(
             },
             "target_item_popularity_bucket_recall": candidate_buckets,
         },
+        "comparison": {
+            "paired_bootstrap_ci": {
+                "overall_recall@50_delta": {
+                    "point_estimate": recall - BASELINE_FULL_TEST_RECALL[42],
+                    "ci95_low": ci95_low,
+                    "ci95_high": 0.02,
+                    "num_users": 1000,
+                },
+            },
+        },
     }
 
 
@@ -75,41 +88,60 @@ class Gate0Test(unittest.TestCase):
 
 class Gate1Test(unittest.TestCase):
     def test_accepts_seed42_when_all_full_audit_constraints_pass(self) -> None:
-        result = evaluate_gate1(make_audit())
+        result = evaluate_audit_gate(make_audit(), seed=42)
 
         self.assertTrue(result["passes_gate"])
         self.assertEqual(result["failed_constraints"], [])
         self.assertAlmostEqual(result["long_tail_recall@50"], 17 / 300)
 
     def test_rejects_seed42_when_tail_or_exposure_constraints_fail(self) -> None:
-        result = evaluate_gate1(make_audit(bucket_1to5=0.020000, head_share=0.31, gini=0.71))
+        result = evaluate_audit_gate(
+            make_audit(bucket_1to5=0.020000, head_share=0.31, gini=0.71),
+            seed=42,
+        )
 
         self.assertFalse(result["passes_gate"])
         self.assertIn("bucket_1-5", result["failed_constraints"])
         self.assertIn("head_share", result["failed_constraints"])
         self.assertIn("exposure_gini", result["failed_constraints"])
 
+    def test_rejects_seed42_when_bootstrap_ci_includes_zero(self) -> None:
+        result = evaluate_audit_gate(make_audit(ci95_low=0.0), seed=42)
+
+        self.assertFalse(result["passes_gate"])
+        self.assertIn("overall_recall_bootstrap_ci", result["failed_constraints"])
+
+
+class BaselineCheckpointRoutingTest(unittest.TestCase):
+    def test_routes_each_seed_to_historical_baseline_checkpoint(self) -> None:
+        for seed in (42, 2024, 2025):
+            self.assertEqual(get_baseline_checkpoint(seed), BASELINE_CHECKPOINTS[seed])
+
+    def test_rejects_unknown_seed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported baseline seed"):
+            get_baseline_checkpoint(7)
+
 
 class Gate2Test(unittest.TestCase):
-    def test_accepts_multiseed_when_each_paired_delta_is_positive(self) -> None:
+    def test_accepts_multiseed_when_each_seed_audit_passes(self) -> None:
         result = evaluate_gate2({
-            42: 0.120000,
-            2024: 0.121000,
-            2025: 0.119000,
+            42: evaluate_audit_gate(make_audit(recall=0.120000), seed=42),
+            2024: evaluate_audit_gate(make_audit(recall=0.121000), seed=2024),
+            2025: evaluate_audit_gate(make_audit(recall=0.119000), seed=2025),
         })
 
         self.assertTrue(result["passes_gate"])
         self.assertGreater(result["candidate_std"], 0.0)
 
-    def test_rejects_multiseed_when_one_seed_does_not_improve(self) -> None:
+    def test_rejects_multiseed_when_one_seed_audit_fails(self) -> None:
         result = evaluate_gate2({
-            42: 0.120000,
-            2024: BASELINE_FULL_TEST_RECALL[2024],
-            2025: 0.119000,
+            42: evaluate_audit_gate(make_audit(recall=0.120000), seed=42),
+            2024: evaluate_audit_gate(make_audit(recall=0.121000, head_share=0.31), seed=2024),
+            2025: evaluate_audit_gate(make_audit(recall=0.119000), seed=2025),
         })
 
         self.assertFalse(result["passes_gate"])
-        self.assertIn("paired_delta_seed2024", result["failed_constraints"])
+        self.assertIn("seed2024_audit_gate", result["failed_constraints"])
 
 
 if __name__ == "__main__":

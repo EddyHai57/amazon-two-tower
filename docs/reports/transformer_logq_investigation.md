@@ -308,3 +308,31 @@ outputs/text_timeaware_transformer_sampling_full/uber-batchq-alpha010-seed*/
 ```
 
 本轮不自动启动 4ch、Faiss 或 canonical replacement。
+
+### 12.1 Full validation hardening
+
+正式启动前补充两项可信度增强：
+
+1. 三个 seed 均使用对应 historical baseline checkpoint 做 paired effect audit，而不是只审计 seed42。
+2. 每个 paired audit 增加 deterministic bootstrap CI：
+
+```text
+bootstrap_seed = 42
+bootstrap_resamples = 10000
+overall Recall delta CI95
+long-tail Recall delta CI95, where target item train popularity <= 20
+```
+
+overall Recall delta 的 `CI95 low > 0` 是每个 seed 的硬 gate。长尾 CI 只报告，不作为硬 gate；
+长尾不伤害仍由 `1-5` 和 `6-20` 两个 bucket 分别不回退约束保证。
+
+### 12.2 Interrupted run archive boundary
+
+一次误启动的 gate0 在人工停止前写出 partial checkpoint，但没有 full eval 或 gate JSON。
+正式重跑前必须先将 partial outputs 和 server log 移动到：
+
+```text
+/workspace/server-logs/archives/transformer_sampling_uber_alpha010_interrupted_<timestamp>/
+```
+
+不得续跑、覆盖或删除 partial 现场。

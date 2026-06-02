@@ -18,7 +18,9 @@ from audit_transformer_logq_effect import (  # noqa: E402
     average_jaccard,
     build_test_seen_items,
     correction_stats,
+    paired_bootstrap_ci,
     select_non_cold_eval,
+    summarize_paired_bootstrap,
 )
 
 
@@ -136,6 +138,64 @@ class EvalProtocolTest(unittest.TestCase):
         selected = select_non_cold_eval(test)
 
         self.assertEqual(selected["user_idx"].tolist(), [0])
+
+
+class PairedBootstrapTest(unittest.TestCase):
+    def test_is_reproducible_for_fixed_seed(self) -> None:
+        baseline_hit = np.array([False, False, True, False, True])
+        candidate_hit = np.array([True, False, True, True, True])
+
+        first = paired_bootstrap_ci(baseline_hit, candidate_hit, seed=42, resamples=1000)
+        second = paired_bootstrap_ci(baseline_hit, candidate_hit, seed=42, resamples=1000)
+
+        self.assertEqual(first, second)
+
+    def test_positive_delta_has_positive_confidence_interval(self) -> None:
+        baseline_hit = np.zeros(100, dtype=bool)
+        candidate_hit = np.ones(100, dtype=bool)
+
+        result = paired_bootstrap_ci(baseline_hit, candidate_hit, seed=42, resamples=1000)
+
+        self.assertGreater(result["ci95_low"], 0.0)
+
+    def test_long_tail_subset_only_includes_popularity_at_most_twenty(self) -> None:
+        baseline_hit = np.array([False, False, False, False])
+        candidate_hit = np.array([True, True, True, True])
+        targets = np.array([0, 1, 2, 3])
+        popularity = np.array([1, 20, 21, 200])
+
+        result = summarize_paired_bootstrap(
+            baseline_hit,
+            candidate_hit,
+            targets,
+            popularity,
+            seed=42,
+            resamples=1000,
+        )
+
+        self.assertEqual(result["long_tail_recall@50_delta"]["num_users"], 2)
+
+    def test_empty_long_tail_subset_returns_zero_interval(self) -> None:
+        baseline_hit = np.array([False, True])
+        candidate_hit = np.array([True, True])
+        targets = np.array([0, 1])
+        popularity = np.array([21, 200])
+
+        result = summarize_paired_bootstrap(
+            baseline_hit,
+            candidate_hit,
+            targets,
+            popularity,
+            seed=42,
+            resamples=1000,
+        )
+
+        self.assertEqual(result["long_tail_recall@50_delta"], {
+            "point_estimate": 0.0,
+            "ci95_low": 0.0,
+            "ci95_high": 0.0,
+            "num_users": 0,
+        })
 
 
 if __name__ == "__main__":
