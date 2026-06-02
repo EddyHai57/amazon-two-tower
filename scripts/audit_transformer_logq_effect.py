@@ -77,6 +77,24 @@ def aggregate_exposure_metrics(
 ) -> dict[str, Any]:
     popularity = item_popularity[topk].reshape(-1)
     total = int(popularity.size)
+    exposure_counts = np.bincount(topk.reshape(-1), minlength=len(item_popularity)).astype(np.float64)
+    nonzero_exposure = exposure_counts[exposure_counts > 0]
+    if total and len(item_popularity) > 1:
+        probabilities = nonzero_exposure / total
+        normalized_entropy = float(
+            -(probabilities * np.log(probabilities)).sum() / math.log(len(item_popularity))
+        )
+    else:
+        normalized_entropy = 0.0
+    if total and len(item_popularity):
+        sorted_exposure = np.sort(exposure_counts)
+        ranks = np.arange(1, len(sorted_exposure) + 1, dtype=np.float64)
+        exposure_gini = float(
+            ((2.0 * ranks - len(sorted_exposure) - 1.0) * sorted_exposure).sum()
+            / (len(sorted_exposure) * total)
+        )
+    else:
+        exposure_gini = 0.0
     bucket_counts = {
         name: int(popularity_mask(popularity, low, high).sum())
         for name, low, high in POPULARITY_BUCKETS_WITH_UNSEEN
@@ -86,6 +104,8 @@ def aggregate_exposure_metrics(
         "median_pop": float(np.median(popularity)),
         "p90_pop": float(np.percentile(popularity, 90)),
         "catalog_coverage": int(np.unique(topk).size),
+        "normalized_exposure_entropy": normalized_entropy,
+        "exposure_gini": exposure_gini,
         "topk_item_bucket_share": {
             name: bucket_counts[name] / total if total else 0.0
             for name, _, _ in POPULARITY_BUCKETS_WITH_UNSEEN

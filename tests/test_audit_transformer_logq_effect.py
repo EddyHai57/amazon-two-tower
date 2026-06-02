@@ -65,6 +65,24 @@ class ExposureMetricsTest(unittest.TestCase):
         self.assertEqual(result["topk_item_bucket_share"][">100"], 0.25)
         self.assertEqual(result["topk_item_bucket_share"]["unseen"], 0.25)
 
+    def test_reports_uniform_catalog_exposure_entropy_and_gini(self) -> None:
+        topk = np.array([[0, 1], [2, 3]])
+        popularity = np.array([1, 10, 40, 200])
+
+        result = aggregate_exposure_metrics(topk, popularity)
+
+        self.assertAlmostEqual(result["normalized_exposure_entropy"], 1.0)
+        self.assertAlmostEqual(result["exposure_gini"], 0.0)
+
+    def test_exposure_concentration_includes_zero_exposure_catalog_items(self) -> None:
+        topk = np.array([[0, 0], [0, 0]])
+        popularity = np.array([1, 10, 40, 200])
+
+        result = aggregate_exposure_metrics(topk, popularity)
+
+        self.assertAlmostEqual(result["normalized_exposure_entropy"], 0.0)
+        self.assertAlmostEqual(result["exposure_gini"], 0.75)
+
 
 class CorrectionStatsTest(unittest.TestCase):
     def test_reports_train_item_counts_and_unseen_items(self) -> None:
