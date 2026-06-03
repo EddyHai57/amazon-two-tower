@@ -2924,3 +2924,48 @@ long-tail Recall delta CI95, target popularity <=20
 每个 seed 均加载对应 historical baseline checkpoint。每个 seed 的 overall Recall delta
 `CI95 low > 0` 为硬 gate。误启动 gate0 产生的 partial checkpoint 在正式重跑前归档，
 不得续跑、删除或静默覆盖。
+
+### 2026-06-03 Uber BatchQ alpha010 final closeout
+
+状态：`Closed - not adopted`
+
+正式 full-test multi-seed 验收已完成并按 gate 自动停止：
+
+```text
+Gate0 alpha=0.00 sanity: PASS
+  alpha=0.00 full test R@50 = 0.103116
+  canonical full test R@50  = 0.103168
+  absolute delta < 0.001
+
+Gate1 alpha=0.10 seed42: PASS
+  full test R@50 = 0.112047
+  overall CI95 = [0.008311, 0.009461]
+  long-tail CI95 = [0.001171, 0.002964]
+
+Gate2 alpha=0.10 seed2024: FAIL
+  full test R@50 = 0.114982
+  1-5 bucket delta = -0.004252
+  6-20 bucket delta = -0.002779
+  long-tail CI95 = [-0.003751, -0.002670]
+```
+
+失败约束：
+
+```text
+bucket_1-5
+bucket_6-20
+```
+
+最终处理：
+
+- 不采用 LogQ / Uber BatchQ。
+- 不启动 LogQ 版 4ch。
+- 不启动 LogQ 版 Faiss。
+- 不继续 alpha sweep。
+- canonical 保持基础 InfoNCE Transformer TT + 4ch valid-selected RRF。
+
+后续复用建议：
+
+- 总 Recall 提升不能单独证明模型健康。
+- sampling correction 必须同时看 target popularity buckets、coverage、Top50 热门占比、多 seed 和 bootstrap CI。
+- 若未来继续做长尾友好修正，应作为新研究分支，优先考虑 PDA / DICE / 低比例 MNS / 显式长尾约束，而不是围绕当前 alpha 继续搜索。

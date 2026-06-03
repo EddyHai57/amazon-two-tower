@@ -927,3 +927,98 @@ A。
 - `docs/reports/multichannel_transformer_final_eval.md`
 - `outputs/multichannel_transformer_final/final_test_metrics.json`
 - `outputs/multichannel_transformer_final/candidate_audit/audit_summary.json`
+
+---
+
+## Decision 21：不采用 LogQ / Uber BatchQ，保持基础 InfoNCE Transformer + 4ch RRF 为最终主线
+
+### 决策时间
+
+2026-06-03
+
+### 决策主题
+
+LogQ / Uber BatchQ 作为 sampling-bias correction 调查完成，但不替换 canonical loss，不启动
+LogQ 版 4ch 或 Faiss，不修改 README、简历或 CLAUDE canonical 数字。
+
+### 背景
+
+基础 in-batch InfoNCE 存在 popularity sampling bias：热门 item 更容易进入 batch，也更频繁地
+作为其他用户的负样本。为验证该问题，本项目实现了 old empirical LogQ、Uber batch
+appearance Q、duplicate masking、shuffled-Q negative control、refined LogQ 和 MNS smoke。
+
+### 关键结果
+
+强 LogQ `alpha=1.0` 在三个 seed 上均显著提高总体 Recall：
+
+```text
+seed42:   0.103168 -> 0.149926
+seed2024: 0.103704 -> 0.149485
+seed2025: 0.096223 -> 0.147757
+```
+
+但 full-test effect audit 显示收益主要来自 head item：
+
+```text
+1-5 bucket:    0.026480 -> 0.001741
+6-20 bucket:   0.060390 -> 0.013782
+21-100 bucket: 0.096687 -> 0.068465
+>100 bucket:   0.138252 -> 0.292048
+Top50 >100 share: 19.89% -> 81.99%
+coverage: 152691 -> 57610
+```
+
+随后做 Uber BatchQ low-alpha Pareto smoke，`alpha=0.10` 是唯一通过 limited-valid
+约束 gate 的候选。但 full-test multi-seed 验收中：
+
+```text
+Gate0 alpha=0.00 sanity: PASS
+  full test R@50 = 0.103116, canonical = 0.103168, |delta| < 0.001
+
+Gate1 alpha=0.10 seed42: PASS
+  full test R@50 = 0.112047
+  四个 target popularity buckets 均提升
+  long-tail CI95 = [0.001171, 0.002964]
+
+Gate2 alpha=0.10 seed2024: FAIL
+  full test R@50 = 0.114982
+  1-5 bucket delta = -0.004252
+  6-20 bucket delta = -0.002779
+  long-tail CI95 = [-0.003751, -0.002670]
+```
+
+### 最终选择
+
+不采用 LogQ / Uber BatchQ。最终主线保持：
+
+```text
+Time-aware Transformer Two-Tower, base InfoNCE
++ 4ch valid-selected Weighted RRF
++ Faiss ANN benchmark as retrieval acceleration only
+```
+
+### 选择原因
+
+1. LogQ / BatchQ 的总体 Recall 提升是真实的，但不能单独代表健康的个性化提升。
+2. 强 LogQ 明显把曝光推向热门物品，造成 long-tail bucket 回退和 coverage 下降。
+3. 温和 `alpha=0.10` 在 seed42 上健康，但 seed2024 显著伤害 `1-5` 和 `6-20` 低热度目标桶。
+4. 继续微调 alpha 容易变成事后搜索，不符合预注册 gate 和收口目标。
+5. 当前项目价值更适合写成“识别并拒绝指标幻觉”的严谨实验故事，而不是继续追单一 Recall。
+
+### 对实验可比性的影响
+
+- Transformer TT canonical full test Recall@50 仍为 `0.103168`。
+- 4ch valid-selected RRF canonical full test Recall@50 仍为 `0.125164`。
+- 所有 LogQ / BatchQ / MNS 结果均标记为 diagnostic 或 rejected，不进入主线。
+
+### 对后续开发的影响
+
+- 不再继续 `alpha` sweep。
+- 不启动 LogQ 版 4ch 或 Faiss。
+- 若未来继续研究长尾友好的 sampling correction，应作为新研究分支，优先考虑 PDA / DICE / 低比例 MNS / 显式长尾约束，而不是围绕当前 test 继续调 alpha。
+
+### 参考文件
+
+- `docs/reports/transformer_logq_investigation.md`
+- `outputs/transformer_sampling_uber_alpha010_full_validation/final_summary.json`
+- `outputs/transformer_sampling_uber_alpha010_full_validation/final_report.md`
