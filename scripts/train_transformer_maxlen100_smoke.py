@@ -65,7 +65,7 @@ except ModuleNotFoundError as exc:
 # Config / constants
 # ---------------------------------------------------------------------------
 
-VALID_POOLING = ("time_decay", "transformer_vanilla", "transformer_timeaware")
+VALID_POOLING = ("time_decay", "transformer_vanilla", "transformer_timeaware", "mean_pool_timeaware")
 
 REQUIRED_CONFIG_KEYS = [
     "data_dir", "output_dir", "embedding_dim", "batch_size", "learning_rate",
@@ -91,6 +91,7 @@ FNAME_MAP = {
     "time_decay":            "time_decay_max100_metrics.json",
     "transformer_vanilla":    "transformer_vanilla_max100_metrics.json",
     "transformer_timeaware":  "transformer_timeaware_max100_metrics.json",
+    "mean_pool_timeaware":    "mean_pool_timeaware_max100_metrics.json",
 }
 
 # Transformer defaults (overridable via config)
@@ -370,6 +371,34 @@ class TransformerHistoryEncoder(nn.Module):
         return pooled
 
 
+class MeanPoolTimeawareHistoryEncoder(nn.Module):
+    """Mean pool over item, positional, and recency embeddings without attention."""
+
+    def __init__(self, embedding_dim: int, max_len: int) -> None:
+        super().__init__()
+        self.pos_embedding = nn.Embedding(max_len, embedding_dim)
+        self.recency_embedding = nn.Embedding(RECENCY_BUCKET_COUNT, embedding_dim)
+        nn.init.normal_(self.pos_embedding.weight, mean=0.0, std=0.02)
+        nn.init.normal_(self.recency_embedding.weight, mean=0.0, std=0.02)
+
+    def forward(
+        self,
+        hist_emb: torch.Tensor,
+        valid_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        L = hist_emb.shape[1]
+        pos = torch.arange(L, device=hist_emb.device)
+        recency_ids = TransformerHistoryEncoder.recency_bucket_ids(valid_mask)
+        x = (
+            hist_emb
+            + self.pos_embedding(pos).unsqueeze(0)
+            + self.recency_embedding(recency_ids)
+        )
+        valid_f = valid_mask.unsqueeze(-1).to(x.dtype)
+        pooled = (x * valid_f).sum(1) / valid_f.sum(1).clamp_min(1e-8)
+        return torch.nan_to_num(pooled, nan=0.0)
+
+
 class TextTwoTowerTransformerSmoke(nn.Module):
     """Two-Tower with time_decay or Transformer user history pooling.
 
@@ -423,6 +452,11 @@ class TextTwoTowerTransformerSmoke(nn.Module):
                 num_layers=num_layers,
                 use_recency_buckets=self.pooling_type == "transformer_timeaware",
             )
+        elif self.pooling_type == "mean_pool_timeaware":
+            self.mean_pool_timeaware_encoder = MeanPoolTimeawareHistoryEncoder(
+                embedding_dim=embedding_dim,
+                max_len=max_len,
+            )
 
     # ── pooling ──────────────────────────────────────────────────────────────
 
@@ -446,6 +480,9 @@ class TextTwoTowerTransformerSmoke(nn.Module):
             w    = w.unsqueeze(0).unsqueeze(-1)
             mask = valid_mask.unsqueeze(-1).to(hist_emb.dtype)
             return (hist_emb * mask * w).sum(1) / (mask * w).sum(1).clamp_min(1e-8)
+
+        if self.pooling_type == "mean_pool_timeaware":
+            return self.mean_pool_timeaware_encoder(hist_emb, valid_mask)
 
         # transformer_vanilla / transformer_timeaware
         return self.transformer_encoder(hist_emb, valid_mask)
