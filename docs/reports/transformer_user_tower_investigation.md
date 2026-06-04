@@ -620,3 +620,132 @@ max_len=100 vs max_len=20 full test R@50 差值：+0.0019
 **✅ 建议替换：full test R@50 > 0.10，等 Eddy 确认后进入 multi-channel / Faiss 重跑。**
 
 > ⚠️ 以上均为 offline full eval 结论。不覆盖旧 final。不自动更新 README / 简历。
+
+---
+
+## 18. Gain Attribution Closeout：full-test 修正
+
+**状态：** ✅ 完成（2026-06-03）
+
+**最终 headline：** 时间特征（positional + recency bucket）是必要组件；纯 attention 在 paired smoke 中比 time-decay 还差。attention 也不是摆设：full test 上 canonical Transformer TT `0.103168` 明显高于 `mean_pool_timeaware` `0.086420`，额外贡献约 `+0.016748`。limited-valid smoke 一度会得出"attention 非必要"的误判，full test 修正了这个结论，说明不能轻信小规模 eval。
+
+**目的：** 拆分 `transformer_timeaware` 的增益来源：到底来自 self-attention，还是来自 `positional + recency bucket` 时间特征工程。
+
+### 18.1 Paired limited-valid smoke 设置
+
+- 输出目录：`outputs/transformer_gain_attribution/`
+- 评估口径：**3-epoch 50K limited-valid smoke**，不是 full test
+- 四档配置除 `pooling_type` / `output_dir` 外同参：
+  - `time_decay`
+  - `transformer_vanilla`
+  - `transformer_timeaware`
+  - `mean_pool_timeaware`
+- `mean_pool_timeaware`：`item_id_embedding + positional embedding + recency bucket embedding` 后直接 masked mean pool，**不经过 Transformer encoder**
+- 不修改 canonical run / split / seed / loss / temperature / seen mask / cold 口径
+
+### 18.2 Limited-valid smoke 结果
+
+| pooling | best_ep | limited-valid R@50 | NDCG@50 | MRR@50 | params | train_sec |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| time_decay | 3 | 0.116640 | 0.049344 | 0.032211 | 41,715,840 | 152.2 |
+| transformer_vanilla | 2 | 0.107640 | 0.044244 | 0.028299 | 41,772,224 | 349.7 |
+| transformer_timeaware | 2 | 0.124560 | 0.051794 | 0.033408 | 41,772,736 | 356.6 |
+| mean_pool_timeaware | 3 | 0.121940 | 0.051260 | 0.033356 | 41,722,752 | 158.7 |
+
+预注册判据：
+
+```text
+|mean_pool_timeaware - transformer_timeaware| < 0.003
+```
+
+实际差值：
+
+```text
+0.121940 - 0.124560 = -0.002620
+```
+
+**limited-valid 过程结论：** 预设判据通过。50K limited-valid smoke 会提示 time-aware Transformer 的 early valid 增益主要来自 `positional + recency bucket` 时间特征工程；此时如果只看 smoke，容易误写成"self-attention 非必要"。
+
+### 18.3 mean_pool_timeaware full eval
+
+对 `mean_pool_timeaware` best checkpoint 单独补了一次 full eval：
+
+| split | R@50 | NDCG@50 | MRR@50 |
+| --- | ---: | ---: | ---: |
+| full valid | 0.124525 | 0.051831 | 0.033454 |
+| full test | 0.086420 | 0.033833 | 0.020773 |
+
+Test bucket R@50：
+
+| bucket | R@50 |
+| --- | ---: |
+| le5 | 0.101687 |
+| 6to20 | 0.079531 |
+| gt20 | 0.043246 |
+
+**full-test 修正结论：**
+
+- `mean_pool_timeaware` full test R@50=`0.086420`，高于历史 Time-decay TT `0.078315`，说明 `positional + recency bucket` 时间特征本身有独立价值。
+- canonical Transformer TT full test R@50=`0.103168`，比 `mean_pool_timeaware` 高 `+0.016748`，说明 attention 对 full-test 泛化仍有额外贡献，不是摆设。
+- `mean_pool_timeaware` 不替代 canonical；canonical 仍保持 `0.103168` 不变。
+- 这次雷点体现为：limited-valid smoke 可以用于快速定位机制，但不能单独作为最终归因结论；最终 headline 必须服从 full test。
+
+---
+
+## 19. Collapse Diagnosis Closeout
+
+**状态：** ✅ 完成（2026-06-03）
+
+**输出目录：** `outputs/transformer_collapse_diagnosis/`
+
+### 19.1 20-epoch collapse 曲线
+
+只读取既有 `outputs/transformer_user_tower_investigation/timeaware_max100_20ep/train_log.csv`，不重训。
+
+| 指标 | 值 |
+| --- | ---: |
+| peak_epoch | 2 |
+| peak limited-valid R@50 | 0.124340 |
+| final_epoch | 20 |
+| final limited-valid R@50 | 0.027580 |
+| drop after peak | -0.096760 |
+| retention after peak | 22.18% |
+| peak train_loss | 6.201144 |
+| final train_loss | 3.638897 |
+| train_loss delta after peak | -2.562247 |
+
+这确认了原始 20ep timeaware run 的核心现象：train loss 持续下降，但 valid Recall 从 epoch 2 峰值后坍塌。
+
+### 19.2 Canonical best checkpoint embedding health
+
+加载 canonical best checkpoint：`outputs/text_timeaware_transformer_max100_final/checkpoints/best_model.pt`，导出 item embeddings 并计算谱诊断。
+
+| 指标 | 值 |
+| --- | ---: |
+| checkpoint_epoch | 2 |
+| checkpoint best limited-valid R@50 | 0.124560 |
+| item embedding shape | 153,977 × 64 |
+| nan_count / inf_count | 0 / 0 |
+| norm_mean | 1.000000 |
+| effective_rank | 28.812 |
+| participation_rank | 20.588 |
+| top1 explained variance | 0.110135 |
+| top5 explained variance | 0.375480 |
+| uniformity sample | -3.502885 |
+| mean pairwise squared distance | 1.964033 |
+| healthy_peak_checkpoint | true |
+
+诊断结论：canonical best checkpoint 是有限、非单维坍塌、高有效秩的健康峰值版；坍塌主要发生在继续以 `lr=1e-3` 训练 epoch 2 之后。
+
+### 19.3 与 stability sweep 的合并结论
+
+已有 stability sweep：
+
+| config | 设置 | best_ep | full test R@50 |
+| --- | --- | ---: | ---: |
+| A | lr=1e-3, no clip, patience=2 | 2 | 0.103128 |
+| B | lr=3e-4, grad_clip=1.0, patience=3 | 3 | 0.100282 |
+| C | lr=1e-4, grad_clip=1.0, patience=3 | 5 | 0.094946 |
+| D | lr=3e-4, grad_clip=1.0, warmup+cosine | 3 | 0.100304 |
+
+**最终解释：** 坍塌由 `lr=1e-3` 在 epoch 2 后继续优化驱动。`lr=3e-4 + grad_clip` 能让训练更稳，但相对 canonical early-stopped run 损失约 `0.0028–0.0029` Recall@50。项目选择 canonical A，不是因为后期训练稳定，而是因为 early stopping 能锁住 epoch 2 的健康峰值 checkpoint。
